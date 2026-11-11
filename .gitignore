@@ -1,0 +1,5 @@
+node_modules/
+dist/
+mobile/node_modules/
+mobile/www/
+*.log

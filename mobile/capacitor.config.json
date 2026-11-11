@@ -1,0 +1,10 @@
+{
+  "appId": "app.cliploom.editor",
+  "appName": "Cliploom",
+  "webDir": "www",
+  "android": { "backgroundColor": "#0c0e13" },
+  "plugins": {
+    "CapacitorHttp": { "enabled": false },
+    "SplashScreen": { "backgroundColor": "#0c0e13" }
+  }
+}

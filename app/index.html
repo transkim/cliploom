@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' blob: data:; img-src 'self' blob: data:; media-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; connect-src 'self' blob: data: https: capacitor: http://localhost">
+  <title>Cliploom</title>
+  <link rel="icon" href="img/icon.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <!-- Home: projects -->
+  <section id="home" class="screen">
+    <header class="home-top">
+      <div class="brand"><img src="img/icon.png" alt=""><span>Cliploom</span></div>
+    </header>
+    <div class="home-body">
+      <button id="newProject" class="hero-new">
+        <span class="plus">+</span>
+        <span><b>New project</b><small>Videos, photos, text, sounds</small></span>
+      </button>
+      <h2 class="h-sec">Your projects</h2>
+      <div id="projects" class="proj-grid"></div>
+      <p id="noProjects" class="muted hidden">Nothing yet. Tap New project to start.</p>
+    </div>
+  </section>
+
+  <!-- Editor -->
+  <section id="editor" class="screen hidden">
+    <header class="ed-top">
+      <button id="back" class="icon-btn" title="Projects" aria-label="Back to projects">&#x2039;</button>
+      <input id="projName" class="proj-name" spellcheck="false" aria-label="Project name">
+      <div class="grow"></div>
+      <button id="undo" class="icon-btn" title="Undo (Ctrl+Z)" aria-label="Undo">&#x21B6;</button>
+      <button id="redo" class="icon-btn" title="Redo (Ctrl+Y)" aria-label="Redo">&#x21B7;</button>
+      <button id="exportBtn" class="btn primary">Export</button>
+    </header>
+
+    <div class="ed-main">
+      <aside id="lib" class="lib sheet">
+        <nav class="tabs" id="libTabs">
+          <button data-tab="media" class="on">Media</button>
+          <button data-tab="sounds">Sounds</button>
+          <button data-tab="text">Text</button>
+          <button data-tab="stickers">Stickers</button>
+          <button data-tab="filters">Filters</button>
+        </nav>
+        <div class="sheet-grip"></div>
+        <div class="tab-body" id="tabBody"></div>
+      </aside>
+
+      <section class="stage">
+        <div class="pv-wrap" id="pvWrap"><canvas id="pv" width="540" height="960"></canvas><div id="pvEmpty" class="pv-empty">Add videos or photos from Media</div></div>
+        <div class="transport">
+          <span id="tNow" class="tc">0:00.0</span>
+          <button id="play" class="play" aria-label="Play">&#9654;</button>
+          <span id="tDur" class="tc dim">0:00.0</span>
+        </div>
+      </section>
+
+      <aside id="insp" class="insp sheet">
+        <div class="sheet-grip"></div>
+        <div id="inspBody"></div>
+      </aside>
+    </div>
+
+    <section class="tl">
+      <div class="tl-tools">
+        <button data-act="split" title="Split at playhead (S)">&#x2702; Split</button>
+        <button data-act="delete" title="Delete (Del)">&#x1F5D1; Delete</button>
+        <button data-act="duplicate" title="Duplicate">&#x29C9; Copy</button>
+        <button data-act="detach" title="Move the clip's sound to its own track">&#x266B; Detach audio</button>
+        <button data-act="addtext" title="Add text at playhead">T+ Text</button>
+        <div class="grow"></div>
+        <label class="zoom">&#x1F50D;<input id="zoom" type="range" min="10" max="300" value="60" aria-label="Timeline zoom"></label>
+      </div>
+      <div class="tl-scroll" id="tlScroll">
+        <div class="tl-inner" id="tlInner">
+          <div class="ruler" id="ruler"></div>
+          <div id="tracks"></div>
+          <div class="playhead" id="playhead"><i></i></div>
+        </div>
+      </div>
+    </section>
+
+    <nav class="bottom-nav" id="bottomNav">
+      <button data-tab="media">&#x1F3AC;<span>Media</span></button>
+      <button data-tab="sounds">&#x266A;<span>Sounds</span></button>
+      <button data-tab="text">T<span>Text</span></button>
+      <button data-tab="stickers">&#x263A;<span>Stickers</span></button>
+      <button data-tab="filters">&#x25D0;<span>Filters</span></button>
+      <button data-tab="edit">&#x2699;<span>Edit</span></button>
+    </nav>
+  </section>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true"><div class="modal-card" id="modalCard"></div></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <input id="fileMedia" type="file" accept="video/*,image/*" multiple hidden>
+  <input id="fileAudio" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.flac" multiple hidden>
+  <input id="fileVidAudio" type="file" accept="video/*,.mp4,.mov,.webm,.mkv" multiple hidden>
+  <input id="fileTikTok" type="file" accept=".zip,.json,application/zip,application/json" hidden>
+
+  <script src="vendor/mp4-muxer.js"></script>
+  <script src="js/model.js"></script>
+  <script src="js/sources.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/platform.js"></script>
+  <script src="js/synth.js"></script>
+  <script src="js/encoder.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

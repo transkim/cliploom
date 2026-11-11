@@ -1,0 +1,31 @@
+{
+  "name": "cliploom",
+  "version": "0.1.0",
+  "description": "Cliploom: a simple video editor with a timeline, text, filters, transitions and a sound library fed by your own videos.",
+  "main": "src/main.js",
+  "license": "MIT",
+  "author": "Hajj Abdul Hakim",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "dist:win": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "38.8.6",
+    "electron-builder": "26.0.12"
+  },
+  "build": {
+    "appId": "app.cliploom.desktop",
+    "productName": "Cliploom",
+    "copyright": "Hajj Abdul Hakim",
+    "files": ["src/**", "app/**", "package.json"],
+    "directories": { "output": "dist", "buildResources": "build" },
+    "win": { "target": ["nsis"], "icon": "build/icon.ico" },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "artifactName": "Cliploom-Setup-${version}.exe"
+    }
+  }
+}

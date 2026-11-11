@@ -1,0 +1,21 @@
+{
+  "name": "cliploom-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cliploom Android app (Capacitor shell around ../app)",
+  "scripts": {
+    "copy-web": "node -e \"const fs=require('fs');fs.rmSync('www',{recursive:true,force:true});fs.cpSync('../app','www',{recursive:true})\"",
+    "sync": "npm run copy-web && cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.6.0",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/browser": "8.0.5",
+    "@capacitor/core": "8.6.0",
+    "@capacitor/filesystem": "8.1.5",
+    "@capacitor/share": "8.0.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.0"
+  }
+}
