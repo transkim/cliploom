@@ -6,7 +6,12 @@
  *   video:    [clip]     main track, clips play one after another
  *   overlays: [overlay]  text and stickers, free placement in time
  *   audio:    [sound]    music, effects, voice; free placement, several lanes
+ *   pip:      [layer]    overlay videos/photos drawn on top (picture in picture), free placement
+ *   effects:  [effect]   video effects over the whole picture for a stretch of time
+ *   cover:    seconds    frame used as the project picture
  * }
+ * layer   = { id, mediaId, kind, start, in, out, speed, volume, x, y, scale, opacity, round, rotate, filter, adjust, lane }
+ * effect  = { id, type, start, dur, strength }
  * clip    = { id, mediaId, kind: 'video'|'image', in, out, speed, volume, filter, adjust, fit, zoom, x, y, transition }
  * overlay = { id, start, dur, text, font, size, color, stroke, box, x, y, anim, align }
  * sound   = { id, mediaId, name, start, in, out, volume, fadeIn, fadeOut, lane }
@@ -29,7 +34,7 @@
     return {
       id: uid('p'), name: name || 'Untitled', ratio: RATIOS[ratio] ? ratio : '9:16', fps: 30,
       bg: { mode: 'blur', color: '#000000' },
-      video: [], overlays: [], audio: [], created: Date.now(), updated: Date.now(),
+      video: [], overlays: [], audio: [], pip: [], effects: [], created: Date.now(), updated: Date.now(),
     };
   }
 
@@ -38,6 +43,10 @@
     const s = maxSide ? Math.min(1, maxSide / Math.max(w, h)) : 1;
     return { w: Math.round(w * s / 2) * 2, h: Math.round(h * s / 2) * 2 };
   }
+
+  const LISTS = ['video', 'overlays', 'audio', 'pip', 'effects'];
+  /** Older projects lack the newer lists. */
+  function ensure(p) { if (!p.pip) p.pip = []; if (!p.effects) p.effects = []; if (!p.bg) p.bg = { mode: 'blur', color: '#000000' }; return p; }
 
   function clipDur(c) { return Math.max(MIN, (c.out - c.in) / (c.speed || 1)); }
   function soundDur(s) { return Math.max(MIN, s.out - s.in); }
@@ -54,6 +63,8 @@
     let d = videoEnd(p);
     for (const o of p.overlays) d = Math.max(d, o.start + o.dur);
     for (const s of p.audio) d = Math.max(d, s.start + soundDur(s));
+    for (const l of p.pip || []) d = Math.max(d, l.start + clipDur(l));
+    for (const e of p.effects || []) d = Math.max(d, e.start + e.dur);
     return d;
   }
 
@@ -93,7 +104,8 @@
   }
 
   function find(p, id) {
-    for (const k of ['video', 'overlays', 'audio']) {
+    for (const k of LISTS) {
+      if (!p[k]) continue;
       const i = p[k].findIndex((x) => x.id === id);
       if (i >= 0) return { list: k, index: i, item: p[k][i] };
     }
@@ -125,6 +137,28 @@
     }, opts || {});
   }
 
+  /** Overlay layer (picture in picture) from a media record. */
+  function makeLayer(media, start, opts) {
+    const isImg = media.kind === 'image';
+    const dur = isImg ? 3 : Math.max(MIN, media.duration || 3);
+    return Object.assign({
+      id: uid('o'), mediaId: media.id, kind: isImg ? 'image' : 'video', start: round(Math.max(0, start || 0)), in: 0, out: round(dur),
+      speed: 1, volume: 1, x: 0.22, y: -0.22, scale: 0.45, opacity: 1, round: 0.06, rotate: 0, filter: 'none', adjust: { b: 0, c: 0, s: 0, w: 0 },
+      lane: 0, mediaDur: isImg ? 0 : dur, blend: 'normal',
+    }, opts || {});
+  }
+  function makeEffect(type, start, opts) {
+    return Object.assign({ id: uid('e'), type, start: round(Math.max(0, start || 0)), dur: 2, strength: 1, lane: 0 }, opts || {});
+  }
+  /** Lane (row) for an item of list k so it does not overlap others. */
+  function freeRow(p, k, a, b, exceptId) {
+    const end = (x) => x.start + (k === 'pip' ? clipDur(x) : x.dur);
+    for (let lane = 0; lane < 8; lane++) {
+      if (!(p[k] || []).some((x) => x.id !== exceptId && (x.lane || 0) === lane && x.start < b && end(x) > a)) return lane;
+    }
+    return 0;
+  }
+
   /** Split the item under time t. Returns the new right-hand item's id or null. */
   function split(p, id, t) {
     const f = find(p, id);
@@ -148,10 +182,20 @@
       p.audio.splice(f.index + 1, 0, right);
       return right.id;
     }
+    if (f.list === 'pip') {
+      const d = clipDur(it);
+      if (t <= it.start + MIN || t >= it.start + d - MIN) return null;
+      const cut = round(it.in + (t - it.start) * (it.speed || 1));
+      const right = JSON.parse(JSON.stringify(it));
+      right.id = uid('o'); right.in = cut; right.start = round(t);
+      it.out = cut;
+      p.pip.splice(f.index + 1, 0, right);
+      return right.id;
+    }
     if (t <= it.start + MIN || t >= it.start + it.dur - MIN) return null;
-    const right = Object.assign({}, it, { id: uid('t'), start: round(t), dur: round(it.start + it.dur - t) });
+    const right = Object.assign({}, it, { id: uid(f.list === 'effects' ? 'e' : 't'), start: round(t), dur: round(it.start + it.dur - t) });
     it.dur = round(t - it.start);
-    p.overlays.splice(f.index + 1, 0, right);
+    p[f.list].splice(f.index + 1, 0, right);
     return right.id;
   }
 
@@ -166,9 +210,10 @@
     const f = find(p, id);
     if (!f) return null;
     const copy = JSON.parse(JSON.stringify(f.item));
-    copy.id = uid(f.list === 'video' ? 'c' : f.list === 'audio' ? 'a' : 't');
+    copy.id = uid({ video: 'c', audio: 'a', overlays: 't', pip: 'o', effects: 'e' }[f.list]);
     if (f.list === 'audio') copy.start = round(f.item.start + soundDur(f.item));
-    if (f.list === 'overlays') copy.start = round(f.item.start + f.item.dur);
+    if (f.list === 'overlays' || f.list === 'effects') copy.start = round(f.item.start + f.item.dur);
+    if (f.list === 'pip') copy.start = round(f.item.start + clipDur(f.item));
     p[f.list].splice(f.index + 1, 0, copy);
     return copy.id;
   }
@@ -191,6 +236,16 @@
       if (edge === 'start') it.in = round(clamp(it.in + delta * sp, it.kind === 'image' ? 0 : 0, it.out - MIN * sp));
       else it.out = round(clamp(it.out + delta * sp, it.in + MIN * sp, max));
       if (it.kind === 'image') { it.out = round(it.out - it.in); it.in = 0; }
+    } else if (f.list === 'pip') {
+      const sp = it.speed || 1;
+      if (it.kind === 'image') {
+        if (edge === 'start') { const d = clamp(delta, -it.start, it.out - MIN); it.start = round(it.start + d); it.out = round(it.out - d); }
+        else it.out = round(Math.max(MIN, it.out + delta));
+      } else if (edge === 'start') {
+        const d = clamp(delta, -it.in / sp, clipDur(it) - MIN);
+        const d2 = Math.max(d, -it.start);
+        it.in = round(it.in + d2 * sp); it.start = round(it.start + d2);
+      } else it.out = round(clamp(it.out + delta * sp, it.in + MIN * sp, it.mediaDur || it.out));
     } else if (f.list === 'audio') {
       const max = it.mediaDur || it.out;
       if (edge === 'start') {
@@ -234,6 +289,11 @@
       if (mediaHasAudio && !mediaHasAudio(c.mediaId)) continue;
       out.push({ mediaId: c.mediaId, when: r.start, offset: c.in, dur: r.end - r.start, rate: c.speed || 1, volume: c.volume, fadeIn: 0, fadeOut: 0 });
     }
+    for (const l of p.pip || []) {
+      if (l.kind !== 'video' || !(l.volume > 0)) continue;
+      if (mediaHasAudio && !mediaHasAudio(l.mediaId)) continue;
+      out.push({ mediaId: l.mediaId, when: l.start, offset: l.in, dur: clipDur(l), rate: l.speed || 1, volume: l.volume, fadeIn: 0, fadeOut: 0 });
+    }
     for (const s of p.audio) {
       if (!(s.volume > 0)) continue;
       out.push({ mediaId: s.mediaId, when: s.start, offset: s.in, dur: soundDur(s), rate: 1, volume: s.volume, fadeIn: s.fadeIn || 0, fadeOut: s.fadeOut || 0 });
@@ -248,7 +308,7 @@
   }
 
   const Model = {
-    RATIOS, uid, clamp, newProject, size, clipDur, soundDur, layout, videoEnd, duration, transDur, videoAt,
+    RATIOS, LISTS, ensure, makeLayer, makeEffect, freeRow, uid, clamp, newProject, size, clipDur, soundDur, layout, videoEnd, duration, transDur, videoAt,
     find, makeClip, makeSound, makeText, split, remove, duplicate, moveVideo, trim, detachAudio, freeLane, audioSchedule, fmt,
   };
   if (typeof module === 'object' && module.exports) module.exports = Model;

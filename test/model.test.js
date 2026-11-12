@@ -111,3 +111,27 @@ test('WAV encoder writes a valid header', () => {
   assert.strictEqual(w.length, 44 + 8);
   assert.strictEqual(String.fromCharCode(...w.slice(0, 4)), 'RIFF');
 });
+
+test('overlay layers and effects: split, trim, duplicate, duration', () => {
+  const p = M.newProject();
+  p.video.push(M.makeClip(vid('a', 4)));
+  const l = M.makeLayer(vid('b', 6), 1);
+  p.pip.push(l);
+  assert.strictEqual(M.duration(p), 7);
+  const r = M.split(p, l.id, 3);
+  assert.ok(r);
+  assert.deepStrictEqual(p.pip.map((x) => [x.start, x.in, x.out]), [[1, 0, 2], [3, 2, 6]]);
+  M.trim(p, r, 'start', 1);
+  assert.deepStrictEqual([p.pip[1].start, p.pip[1].in], [4, 3]);
+  const e = M.makeEffect('shake', 0.5);
+  p.effects.push(e);
+  const e2 = M.duplicate(p, e.id);
+  assert.strictEqual(M.find(p, e2).item.start, 2.5);
+  assert.ok(M.split(p, e.id, 1.5));
+  assert.strictEqual(p.effects.length, 3);
+  assert.strictEqual(M.audioSchedule(p).filter((s) => s.mediaId === 'b').length, 2);
+  const old = { video: [], overlays: [], audio: [] };
+  M.ensure(old);
+  assert.deepStrictEqual([old.pip, old.effects], [[], []]);
+  assert.strictEqual(M.freeRow(p, 'effects', 0.6, 1, null), 1);
+});

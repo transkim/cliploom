@@ -70,6 +70,46 @@
       return res.blob();
     },
 
+    /**
+     * AI provider requests. req = { url, method, headers, json | form (FormData), binary }
+     * -> { status, ok, text, data (parsed JSON or null), blob (binary only) }.
+     * Windows goes through the main process (provider hosts only); Android uses native HTTP
+     * for JSON so there are no browser CORS limits; uploads use fetch with FormData.
+     */
+    async http(req) {
+      const method = req.method || (req.json !== undefined || req.form ? 'POST' : 'GET');
+      const headers = Object.assign({}, req.headers || {});
+      if (req.json !== undefined) headers['Content-Type'] = 'application/json';
+      const parse = (t) => { try { return JSON.parse(t); } catch (_) { return null; } };
+      const done = (status, text, blob) => ({ status, ok: status >= 200 && status < 300, text: text || '', data: text ? parse(text) : null, blob });
+      if (desk && desk.http) {
+        let body;
+        if (req.json !== undefined) body = JSON.stringify(req.json);
+        else if (req.form) {
+          const r = new Response(req.form);
+          headers['Content-Type'] = r.headers.get('content-type');
+          body = new Uint8Array(await r.arrayBuffer());
+        }
+        const r = await desk.http({ url: req.url, method, headers, body, binary: !!req.binary });
+        if (r.error) throw new Error(r.error);
+        if (r.bytes) return done(r.status, '', new Blob([r.bytes], { type: r.type || '' }));
+        return done(r.status, r.text);
+      }
+      if (isNative && P.CapacitorHttp && !req.form) {
+        const r = await P.CapacitorHttp.request({ url: req.url, method, headers, data: req.json, responseType: req.binary ? 'blob' : 'text', connectTimeout: 30000, readTimeout: 600000 });
+        if (req.binary && r.status < 300) {
+          const type = (r.headers && (r.headers['Content-Type'] || r.headers['content-type'])) || '';
+          const bin = atob(r.data); const arr = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+          return done(r.status, '', new Blob([arr], { type }));
+        }
+        return done(r.status, typeof r.data === 'string' ? r.data : JSON.stringify(r.data));
+      }
+      const res = await fetch(req.url, { method, headers, body: req.form || (req.json !== undefined ? JSON.stringify(req.json) : undefined) });
+      if (req.binary && res.ok) return done(res.status, '', await res.blob());
+      return done(res.status, await res.text());
+    },
+
     openExternal(url) {
       if (desk) return desk.openExternal(url);
       if (isNative && P.Browser) return P.Browser.open({ url });

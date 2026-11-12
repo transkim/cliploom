@@ -327,7 +327,7 @@
   }
   async function projectsUsing(id) {
     const ps = await Store.all('projects');
-    return ps.filter((p) => p.video.some((c) => c.mediaId === id) || p.audio.some((s) => s.mediaId === id));
+    return ps.filter((p) => p.video.some((c) => c.mediaId === id) || p.audio.some((s) => s.mediaId === id) || (p.pip || []).some((l) => l.mediaId === id) || (p.bg && p.bg.mediaId === id));
   }
 
   // ---------------- projects ----------------
@@ -373,11 +373,14 @@
   }
 
   async function openProject(p) {
-    st.project = p; st.sel = null; st.hist = []; st.fut = [];
+    M.ensure(p);
+    st.project = p; st.sel = null; st.hist = []; st.fut = []; st.navSub = null;
     engine.pause();
     engine.setProject(p);
     for (const c of p.video) { const m = mediaById(c.mediaId); if (m) await engine.addMedia(m); }
     for (const s of p.audio) { const m = mediaById(s.mediaId); if (m) await engine.addMedia(m); }
+    for (const l of p.pip) { const m = mediaById(l.mediaId); if (m) await engine.addMedia(m); }
+    if (p.bg.mediaId) { const m = mediaById(p.bg.mediaId); if (m) await engine.addMedia(m); }
     $('#home').classList.add('hidden');
     $('#editor').classList.remove('hidden');
     $('#projName').value = p.name;
@@ -449,6 +452,7 @@
     const p = st.project;
     if (!p) return;
     try {
+      if (p.cover != null && p.thumb) throw 0; // a cover frame was picked: keep it
       const c = document.createElement('canvas');
       const s = 220 / Math.max(canvas.width, canvas.height);
       c.width = Math.round(canvas.width * s); c.height = Math.round(canvas.height * s);
@@ -473,6 +477,9 @@
   function select(id, openEdit) {
     st.sel = id;
     renderTimeline(); renderInspector();
+    // keep the picked item in view (new rows such as effects can be below the fold)
+    const el = id && $('.item[data-id="' + id + '"]');
+    if (el) { const sc = $('#tlScroll'), r = el.getBoundingClientRect(), sr = sc.getBoundingClientRect(); if (r.bottom > sr.bottom - 4) sc.scrollTop += r.bottom - sr.bottom + 10; else if (r.top < sr.top + 30) sc.scrollTop -= sr.top + 30 - r.top; }
     if (st.tab === 'filters') renderTab();
     if (openEdit && isPhone() && id) openSheet('edit');
   }
@@ -507,17 +514,38 @@
     if (ab) ab.style.display = st.project && st.project.video.length ? '' : 'none';
     if (ab && v2) ab.style.top =(v2.offsetTop - $('#tlScroll').scrollTop + v2.offsetHeight / 2) + 'px';
   }
+  /** Pick the clip under the playhead (for Edit and Adjust with nothing selected). */
+  function selectAtPlayhead(then) {
+    const at = M.videoAt(st.project, engine.time)[0];
+    if (!at) { toast('Add a video or photo first'); return; }
+    select(at.clip.id);
+    if (then) then();
+  }
   function renderBottomNav() {
     const nav = $('#bottomNav');
     if (!nav) return;
     const f = selected();
-    const T = (icon, label, fn, cls) => h('button', { class: cls || '', onclick: fn, html: Icons.svg(icon, 26) + '<span>' + label + '</span>' });
+    const T = (icon, label, fn, cls, badge) => h('button', { class: cls || '', onclick: fn, html: Icons.svg(icon, 26) + (badge ? '<em class="ai-badge">AI</em>' : '') + '<span>' + label + '</span>' });
+    const sub = (name) => () => { st.navSub = name; renderBottomNav(); };
+    const up = T('back', '', () => { st.navSub = null; renderBottomNav(); }, 'back');
     let tools;
-    if (!f) {
+    if (!f && st.navSub === 'generate') {
+      tools = [up, T('image', 'AI image', () => imageDialog()), T('video', 'AI video', () => videoDialog()), T('chat', 'AI dialogue scene', () => dialogueDialog()),
+        T('folder', 'Generated', () => generatedDialog()), T('gear', 'AI keys', () => aiSettingsDialog())];
+    } else if (!f && st.navSub === 'audio') {
+      tools = [up, T('audio', 'Sounds', () => setTab('sounds')), T('detach', 'From video', () => $('#fileVidAudio').click()), T('media', 'My TikTok', tiktokDialog),
+        T('voice', 'Record', recordDialog), T('ai', 'AI voice', () => voiceDialog(), '', true)];
+    } else if (!f && st.navSub === 'text') {
+      tools = [up, T('plus', 'Add text', () => addText({})), T('text', 'Text styles', () => setTab('text')), T('captions', 'Auto captions', () => setTab('captions')),
+        T('ai', 'AI writer', () => writerDialog(), '', true), T('sticker', 'Stickers', () => setTab('stickers'))];
+    } else if (!f) {
+      st.navSub = null;
       tools = [
-        T('media', 'Media', () => setTab('media')), T('audio', 'Audio', () => setTab('sounds')), T('text', 'Text', () => setTab('text')),
-        T('sticker', 'Stickers', () => setTab('stickers')), T('filter', 'Filters', () => setTab('filters')), T('voice', 'Voice', recordDialog),
-        T('shape', 'Format', () => openSheet('edit')),
+        T('edit', 'Edit', () => selectAtPlayhead()), T('audio', 'Audio', sub('audio')), T('text', 'Text', sub('text')), T('effects', 'Effects', () => setTab('effects')),
+        T('overlay', 'Overlay', () => setTab('overlay')), T('captions', 'Captions', () => setTab('captions')), T('filter', 'Filters', () => setTab('filters')),
+        T('adjust', 'Adjust', () => selectAtPlayhead(() => editAt('Brightness'))), T('sticker', 'Stickers', () => setTab('stickers')),
+        T('ai', 'Generate media', sub('generate'), 'gen', true), T('avatar', 'AI avatar', () => avatarDialog(), '', true),
+        T('ratio', 'Aspect ratio', ratioDialog), T('background', 'Background', backgroundDialog), T('media', 'Media', () => setTab('media')), T('gear', 'AI keys', () => aiSettingsDialog()),
       ];
     } else {
       const back = T('back', '', () => select(null), 'back');
@@ -526,25 +554,36 @@
         tools = [back, T('split', 'Split', () => act('split')), v ? T('speed', 'Speed', () => editAt('Speed')) : T('speed', 'Length', () => editAt('Length')),
           v ? T('volume', 'Volume', () => editAt('Volume')) : null, T('filter', 'Filters', () => setTab('filters')), T('adjust', 'Adjust', () => editAt('Brightness')),
           T('crop', 'Fit & zoom', () => editAt('Fit')), T('transition', 'Transition', () => editAt('Transition')), v ? T('detach', 'Extract audio', () => act('detach')) : null,
-          T('copy', 'Copy', () => act('duplicate')), T('trash', 'Delete', () => act('delete'))].filter(Boolean);
+          T('overlay', 'To overlay', () => act('tooverlay')), T('copy', 'Copy', () => act('duplicate')), T('trash', 'Delete', () => act('delete'))].filter(Boolean);
       } else if (f.list === 'audio') {
         tools = [back, T('split', 'Split', () => act('split')), T('volume', 'Volume', () => editAt('Volume')), T('fade', 'Fade', () => editAt('Fade in')),
+          T('copy', 'Copy', () => act('duplicate')), T('trash', 'Delete', () => act('delete'))];
+      } else if (f.list === 'pip') {
+        const v = f.item.kind === 'video';
+        tools = [back, T('split', 'Split', () => act('split')), T('crop', 'Size', () => editAt('Size')), T('overlay', 'Shape', () => editAt('Shape')),
+          T('fade', 'Opacity', () => editAt('Opacity')), T('effects', 'Blend', () => editAt('Blend')), v ? T('volume', 'Volume', () => editAt('Volume')) : null,
+          T('filter', 'Filter', () => editAt('Filter')), T('adjust', 'Adjust', () => editAt('Brightness')), T('media', 'To main track', () => act('tomain')),
+          T('copy', 'Copy', () => act('duplicate')), T('trash', 'Delete', () => act('delete'))].filter(Boolean);
+      } else if (f.list === 'effects') {
+        tools = [back, T('effects', 'Change', () => editAt('Effect')), T('adjust', 'Strength', () => editAt('Strength')), T('split', 'Split', () => act('split')),
           T('copy', 'Copy', () => act('duplicate')), T('trash', 'Delete', () => act('delete'))];
       } else {
         tools = [back, T('edit', 'Edit', () => editAt('Words')), T('text', 'Font', () => editAt('Font')), T('effects', 'Animation', () => editAt('Animation')),
           T('split', 'Split', () => act('split')), T('copy', 'Copy', () => act('duplicate')), T('trash', 'Delete', () => act('delete'))];
       }
     }
+    const mode = (f ? f.list + ':' + f.item.id : '') + '|' + (st.navSub || '');
     nav.innerHTML = '';
-    nav.classList.toggle('ctx', !!f);
+    nav.classList.toggle('ctx', !!f || !!st.navSub);
     tools.forEach((t) => nav.append(t));
+    if (nav.dataset.mode !== mode) { nav.dataset.mode = mode; nav.scrollLeft = 0; }
   }
 
   function renderTab() {
     const body = $('#tabBody');
     if (!body || !st.project) return;
     body.innerHTML = '';
-    ({ media: tabMedia, sounds: tabSounds, text: tabText, stickers: tabStickers, filters: tabFilters })[st.tab](body);
+    ({ media: tabMedia, sounds: tabSounds, text: tabText, stickers: tabStickers, filters: tabFilters, effects: tabEffects, overlay: tabOverlay, captions: tabCaptions, ai: tabAI })[st.tab](body);
   }
 
   // ---- Media tab ----
@@ -911,6 +950,744 @@
       h('button', { class: 'btn', onclick: () => edit(() => { st.project.video.forEach((x) => { x.filter = c.filter; x.adjust = Object.assign({}, c.adjust); }); toast('Applied to all clips'); }) }, 'Apply to all clips'));
   }
 
+  // ---------------- effects ----------------
+  function tabEffects(body) {
+    const E = Engine.EFFECTS;
+    const groups = {};
+    for (const k of Object.keys(E)) (groups[E[k].group] = groups[E[k].group] || []).push(k);
+    body.append(h('p', { class: 'note', style: { marginTop: 0 } }, 'Tap an effect to add it at the playhead. It gets its own row on the timeline: drag its ends to make it longer or shorter.'));
+    for (const g of Object.keys(groups)) {
+      const grid = h('div', { class: 'fx-grid' });
+      for (const k of groups[g]) grid.append(h('button', { class: 'fx-tile fx-' + k, onclick: () => addEffect(k) }, h('i'), h('span', null, E[k].name)));
+      body.append(h('div', { class: 'sec' }, h('h3', null, g), grid));
+    }
+  }
+  function addEffect(type) {
+    const p = st.project;
+    if (!p.video.length && !p.pip.length) { toast('Add a video or photo first'); return; }
+    let id;
+    edit(() => {
+      const start = type === 'close' ? Math.max(0, M.videoEnd(p) - 1.5) : engine.time;
+      const e = M.makeEffect(type, start, { dur: type === 'open' || type === 'close' ? 1.5 : 2, seed: Math.floor(Math.random() * 1000) });
+      e.lane = M.freeRow(p, 'effects', e.start, e.start + e.dur);
+      p.effects.push(e); id = e.id;
+    });
+    select(id);
+    if (isPhone()) closeSheets();
+    engine.seekTo(M.find(p, id).item.start);
+    toast((Engine.EFFECTS[type] || {}).name + ' added');
+  }
+
+  // ---------------- overlay (picture in picture) ----------------
+  function tabOverlay(body) {
+    body.append(h('button', { class: 'import', onclick: () => { st.importAs = 'overlay'; $('#fileMedia').click(); } }, '＋ Import a video or photo as overlay'),
+      h('div', { class: 'row', style: { marginTop: '8px' } },
+        h('button', { class: 'btn sm', onclick: () => imageDialog({ as: 'overlay' }) }, '✦ AI picture as overlay'),
+        h('button', { class: 'btn sm', onclick: () => avatarDialog() }, '✦ AI avatar')),
+      h('p', { class: 'note' }, 'An overlay sits on top of the main video: a reaction cam, a logo, a second angle. Tap one of your files below to add it at the playhead, then drag it on the preview.'));
+    const vis = st.media.filter((m) => m.kind !== 'audio');
+    const grid = h('div', { class: 'media-grid', style: { marginTop: '10px' } });
+    for (const m of vis) {
+      grid.append(h('button', { class: 'mtile', title: m.name + ' — add as overlay', style: { backgroundImage: m.thumb ? 'url(' + m.thumb + ')' : '' }, onclick: () => addLayer(m) },
+        h('span', { class: 'add' }, '＋'), h('span', { class: 'd' }, m.kind === 'video' ? M.fmt(m.duration).replace(/\.\d$/, '') : m.source === 'ai' ? 'AI' : 'Photo')));
+    }
+    body.append(grid);
+    if (!vis.length) body.append(h('p', { class: 'muted' }, 'Import a video or photo first.'));
+  }
+  async function addLayer(m, quiet, opts) {
+    await engine.addMedia(m);
+    const p = st.project;
+    let id;
+    edit(() => {
+      const l = M.makeLayer(m, engine.time, opts);
+      l.lane = M.freeRow(p, 'pip', l.start, l.start + M.clipDur(l));
+      p.pip.push(l); id = l.id;
+    });
+    select(id);
+    if (!quiet) { if (isPhone()) closeSheets(); toast('Overlay added. Drag it on the preview to move it.'); }
+    return id;
+  }
+
+  // ---------------- aspect ratio, background, cover ----------------
+  function ratioDialog() {
+    const p = st.project;
+    modal((c, close) => {
+      const grid = h('div', { class: 'ratio-grid' });
+      const labels = { '9:16': 'TikTok, Reels, Shorts', '16:9': 'YouTube, TV', '1:1': 'Square posts', '4:5': 'Instagram feed', '3:4': 'Portrait', '21:9': 'Cinema' };
+      for (const r of Object.keys(M.RATIOS)) {
+        const [w, hh] = M.RATIOS[r]; const sc = 40 / Math.max(w, hh);
+        grid.append(h('button', { class: 'ratio' + (r === p.ratio ? ' on' : ''), onclick: () => { edit(() => { p.ratio = r; sizeCanvas(); }); close(); toast('Aspect ratio ' + r); } },
+          h('i', { style: { width: Math.round(w * sc) + 'px', height: Math.round(hh * sc) + 'px' } }), h('b', null, r), h('small', null, labels[r])));
+      }
+      c.append(h('h2', null, 'Aspect ratio'), h('p', { class: 'sub' }, 'The shape of your video. Clips that do not fit get the background you pick under Background.'), grid,
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: () => { close(); backgroundDialog(); } }, 'Background…'), h('div', { class: 'grow' }), h('button', { class: 'btn ghost', onclick: close }, 'Close')));
+    });
+  }
+  function backgroundDialog() {
+    const p = st.project;
+    modal((c, close) => {
+      const pics = st.media.filter((m) => m.kind === 'image');
+      const grid = h('div', { class: 'media-grid', style: { marginTop: '6px' } });
+      for (const m of pics) grid.append(h('button', { class: 'mtile' + (p.bg.mediaId === m.id && p.bg.mode === 'image' ? ' on' : ''), style: { backgroundImage: m.thumb ? 'url(' + m.thumb + ')' : '' }, onclick: () => { setBgImage(m); close(); } }));
+      const sw = h('div', { class: 'swatches' });
+      for (const col of ['#000000', '#ffffff', '#111827', '#1f2937', '#3ce0b4', '#8b7bff', '#ff2d7a', '#ffe14d', '#4da3ff', '#ff9f43', '#1d8f5a', '#7c2d12']) {
+        sw.append(h('button', { class: 'sw' + (p.bg.mode === 'color' && p.bg.color === col ? ' on' : ''), style: { background: col }, onclick: () => { edit(() => { p.bg.mode = 'color'; p.bg.color = col; }); close(); } }));
+      }
+      const pick = h('input', { type: 'color', value: (p.bg.color || '#000000').slice(0, 7) });
+      pick.onchange = () => { edit(() => { p.bg.mode = 'color'; p.bg.color = pick.value; }); };
+      sw.append(pick);
+      c.append(h('h2', null, 'Background'), h('p', { class: 'sub' }, 'Shows behind clips that do not fill the frame (set a clip to Fit to see it).'),
+        h('div', { class: 'row' },
+          h('button', { class: 'btn' + (p.bg.mode === 'blur' ? ' primary' : ''), onclick: () => { edit(() => { p.bg.mode = 'blur'; }); close(); } }, 'Blur of the clip'),
+          h('button', { class: 'btn', onclick: () => { close(); imageDialog({ as: 'background' }); } }, '✦ Make one with AI'),
+          h('button', { class: 'btn', onclick: () => { st.bgPick = true; $('#fileBg').click(); close(); } }, 'Photo from device')),
+        fld('Colour', sw),
+        pics.length ? fld('Your pictures', grid) : null,
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: () => { edit(() => { p.video.forEach((x) => { x.fit = 'fit'; }); }); toast('All clips set to Fit'); } }, 'Fit all clips'), h('div', { class: 'grow' }), h('button', { class: 'btn ghost', onclick: close }, 'Close')));
+    });
+  }
+  async function setBgImage(m) {
+    await engine.addMedia(m);
+    edit(() => { st.project.bg.mode = 'image'; st.project.bg.mediaId = m.id; });
+    toast('Background set');
+  }
+  async function setCover() {
+    const p = st.project;
+    if (!p.video.length) { toast('Add a clip first'); return; }
+    await engine.drawAt(engine.time, true);
+    const c = document.createElement('canvas');
+    const sc = 220 / Math.max(canvas.width, canvas.height);
+    c.width = Math.round(canvas.width * sc); c.height = Math.round(canvas.height * sc);
+    c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
+    edit(() => { p.cover = engine.time; p.thumb = c.toDataURL('image/jpeg', 0.75); });
+    toast('Cover set to the frame at ' + M.fmt(engine.time));
+  }
+
+  // ---------------- AI: settings and helpers ----------------
+  const AI = window.AI;
+  function aiSettingsDialog(after) {
+    modal(async (c, close) => {
+      const cfg = await AI.settings();
+      const inputs = {};
+      const rows = [];
+      for (const k of Object.keys(AI.PROVIDERS)) {
+        const P = AI.PROVIDERS[k];
+        const inp = h('input', { class: 'txt-in', type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: 'Paste your ' + P.name + ' API key', 'aria-label': P.name + ' key' });
+        inp.value = cfg.keys[k] || '';
+        inputs[k] = inp;
+        const out = h('small', { class: 'muted' });
+        const can = P.can.map((x) => ({ text: 'writing', image: 'pictures', video: 'video', speech: 'voices', transcribe: 'captions' }[x])).join(', ');
+        rows.push(h('div', { class: 'ai-key' },
+          h('div', { class: 'ai-key-h' }, h('b', null, P.name), h('small', { class: 'muted' }, P.by + ' · ' + can)),
+          h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, inp,
+            h('button', { class: 'btn sm', onclick: () => { inp.type = inp.type === 'password' ? 'text' : 'password'; } }, '👁'),
+            h('button', { class: 'btn sm', onclick: async () => {
+              out.textContent = 'Checking…';
+              const keep = cfg.keys[k];
+              try { cfg.keys[k] = inp.value.trim(); const r = await AI.test(k); out.textContent = '✓ Works (' + r + ')'; } catch (e) { out.textContent = '✗ ' + e.message; } finally { cfg.keys[k] = keep; }
+            } }, 'Test')),
+          h('div', { class: 'row', style: { justifyContent: 'space-between' } }, out, h('button', { class: 'linkish', onclick: () => Platform.openExternal(P.keyUrl) }, 'Get a key ↗'))));
+      }
+      const models = h('details', { class: 'adv' }, h('summary', null, 'Model names (advanced)'));
+      const mIn = {};
+      for (const id of Object.keys(AI.DEFAULT_MODELS)) {
+        const [prov, task] = id.split('.');
+        const inp = h('input', { class: 'txt-in', placeholder: AI.DEFAULT_MODELS[id], spellcheck: 'false' });
+        inp.value = cfg.models[id] || '';
+        mIn[id] = inp;
+        models.append(h('div', { class: 'fld' }, h('label', null, AI.PROVIDERS[prov].name + ' · ' + { text: 'writing', image: 'pictures', video: 'video', speech: 'voice', transcribe: 'captions' }[task]), inp));
+      }
+      models.append(h('p', { class: 'note' }, 'Leave empty to use the default. Providers rename models often; if one stops working, put the new name here.'));
+      c.append(h('h2', null, 'AI keys'), h('p', { class: 'sub' }, 'Cliploom uses your own accounts. Each request goes from this device straight to the provider and is billed to you.'),
+        ...rows, models,
+        h('p', { class: 'note' }, 'Keys are saved on this device only and are never put in your projects or exports. ChatGPT makes pictures, voices and captions; Gemini makes pictures, video, voices and captions; Claude writes scripts, captions translations and prompts.'),
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn ghost', onclick: close }, 'Cancel'),
+          h('button', { class: 'btn primary', onclick: async () => {
+            const keys = {}; for (const k of Object.keys(inputs)) if (inputs[k].value.trim()) keys[k] = inputs[k].value.trim();
+            const ms = {}; for (const id of Object.keys(mIn)) if (mIn[id].value.trim()) ms[id] = mIn[id].value.trim();
+            await AI.save({ keys, models: ms });
+            close(); toast('AI keys saved on this device');
+            if (after) after();
+          } }, 'Save')));
+    });
+  }
+  /** Row of provider chips for a task; providers without a key open AI settings. */
+  async function providerRow(task, onChange, reopen) {
+    const box = h('div', { class: 'chips prov' });
+    let cur = await AI.preferred(task);
+    const all = Object.keys(AI.PROVIDERS);
+    const ready = await AI.ready(task);
+    for (const k of all) {
+      const P = AI.PROVIDERS[k];
+      const able = P.can.includes(task);
+      const has = ready.includes(k);
+      const b = h('button', { class: 'chip' + (k === cur ? ' on' : '') + (!able || !has ? ' off' : ''), title: !able ? P.name + ' cannot do this' : !has ? 'Add a ' + P.name + ' key' : P.name },
+        P.name + (!able ? ' ✕' : !has ? ' +key' : ''));
+      b.onclick = () => {
+        if (!able) { toast(task === 'video' && k === 'openai' ? 'OpenAI shut down its Sora video API in September 2026. Use Gemini for video.' : P.name + ' cannot do this. ' + (task === 'image' || task === 'speech' || task === 'transcribe' ? 'Pick ChatGPT or Gemini.' : 'Pick Gemini.'), 4500); return; }
+        if (!has) { aiSettingsDialog(reopen); return; }
+        cur = k; $$('.chip', box).forEach((x) => x.classList.toggle('on', x === b)); AI.remember(task, k); if (onChange) onChange(k);
+      };
+      box.append(b);
+    }
+    return { el: box, get: () => cur };
+  }
+  /** Run an AI job with a busy button and a live elapsed time. */
+  async function busy(btn, msg, label, fn) {
+    const t0 = Date.now();
+    btn.disabled = true;
+    const old = btn.textContent;
+    btn.textContent = 'Working…';
+    const tick = setInterval(() => { msg.textContent = label + ' ' + Math.round((Date.now() - t0) / 1000) + ' s'; }, 500);
+    msg.textContent = label;
+    try { return await fn(); } catch (e) { msg.textContent = '✗ ' + (e.message || e); throw e; } finally { clearInterval(tick); btn.disabled = false; btn.textContent = old; }
+  }
+  async function saveGenerated(blob, kind, name, prompt) {
+    const base = { id: M.uid('m'), name, type: blob.type, blob, source: 'ai', prompt: String(prompt || '').slice(0, 500) };
+    if (kind === 'image') {
+      const pr = await probeImage(blob);
+      if (!pr) throw new Error('The picture could not be opened.');
+      return saveMedia(Object.assign(base, { kind: 'image', duration: 0, w: pr.w, h: pr.h, thumb: pr.thumb }));
+    }
+    if (kind === 'video') {
+      const pr = await probeVideo(blob);
+      if (!pr) throw new Error('This device cannot play the video that came back.');
+      const rec = await saveMedia(Object.assign(base, { kind: 'video', duration: pr.duration, w: pr.w, h: pr.h, thumb: pr.thumb }));
+      queueStrip(rec);
+      return rec;
+    }
+    const dur = await probeAudio(blob);
+    if (!dur) throw new Error('The voice that came back could not be read.');
+    const rec = await saveMedia(Object.assign(base, { kind: 'audio', duration: dur, peaks: null }));
+    queuePeaks(rec);
+    return rec;
+  }
+  /** Buttons for a finished picture or video. */
+  function useButtons(m, close, as) {
+    const go = (fn) => async () => { close(); await fn(); if (isPhone()) closeSheets(); };
+    return h('div', { class: 'row' },
+      h('button', { class: 'btn' + (as === 'clip' || !as ? ' primary' : ''), onclick: go(() => addClip(m)) }, 'Add to timeline'),
+      h('button', { class: 'btn' + (as === 'overlay' ? ' primary' : ''), onclick: go(() => addLayer(m)) }, 'Add as overlay'),
+      m.kind === 'image' ? h('button', { class: 'btn' + (as === 'background' ? ' primary' : ''), onclick: go(() => setBgImage(m)) }, 'Use as background') : null,
+      h('button', { class: 'btn ghost', onclick: close }, 'Keep in Generated'));
+  }
+  const STYLES = [['', 'None'], ['photo', 'Photo'], ['cinematic', 'Cinematic'], ['anime', 'Anime'], ['3d', '3D render'], ['illustration', 'Illustration'], ['neon', 'Neon'], ['watercolor', 'Watercolour']];
+  const STYLE_WORDS = { photo: 'realistic photo, natural light, sharp detail', cinematic: 'cinematic film still, dramatic lighting, shallow depth of field', anime: 'anime style illustration', '3d': 'soft 3D render, clay style', illustration: 'flat vector illustration', neon: 'neon lights, vibrant night colors', watercolor: 'watercolor painting' };
+  function aspectFor(task) {
+    const r = st.project.ratio;
+    if (task === 'video') return r === '16:9' || r === '21:9' ? '16:9' : '9:16';
+    return r;
+  }
+  async function improvePrompt(ta, msg, kind) {
+    const prov = await AI.preferred('text');
+    if (!prov) { aiSettingsDialog(); return; }
+    msg.textContent = 'Improving with ' + AI.PROVIDERS[prov].name + '…';
+    try {
+      ta.value = await AI.text(prov, 'Rewrite this idea as one clear, vivid prompt for an AI ' + kind + ' generator. Keep it under 80 words. Only give the prompt.\n\nIdea: ' + ta.value.trim());
+      msg.textContent = 'Prompt improved by ' + AI.PROVIDERS[prov].name + '. Edit it if you like.';
+    } catch (e) { msg.textContent = '✗ ' + e.message; }
+  }
+
+  // ---------------- AI image ----------------
+  function imageDialog(o) {
+    o = o || {};
+    modal(async (c, close) => {
+      const reopen = () => imageDialog(o);
+      const prov = await providerRow('image', null, reopen);
+      const ta = h('textarea', { rows: 3, placeholder: o.as === 'background' ? 'e.g. soft pastel gradient with light bokeh' : 'Describe the picture, e.g. a cosy coffee shop at sunset, rain on the window' });
+      ta.value = o.prompt || '';
+      let style = '';
+      const styles = h('div', { class: 'chips' }, STYLES.map(([v, l]) => { const b = h('button', { class: 'chip' + (v === style ? ' on' : ''), onclick: () => { style = v; $$('.chip', styles).forEach((x) => x.classList.toggle('on', x === b)); } }, l); return b; }));
+      const msg = h('p', { class: 'muted', style: { fontSize: '12.5px' } }, 'Shape ' + aspectFor('image') + ' (from your project).');
+      const result = h('div', { class: 'gen-result' });
+      const go = h('button', { class: 'btn primary' }, 'Generate');
+      go.onclick = async () => {
+        const pr = ta.value.trim();
+        if (!pr) { toast('Describe the picture first'); return; }
+        const pv = prov.get(); if (!pv) { aiSettingsDialog(reopen); return; }
+        const full = pr + (style ? ', ' + STYLE_WORDS[style] : '') + (o.as === 'background' ? ', background with no text, no people in focus' : '');
+        try {
+          const blob = await busy(go, msg, AI.PROVIDERS[pv].name + ' is drawing…', () => AI.image(pv, full, { aspect: aspectFor('image') }));
+          const m = await saveGenerated(blob, 'image', 'AI: ' + pr.slice(0, 40), full);
+          msg.textContent = 'Done. Saved in Generated.';
+          result.innerHTML = '';
+          result.append(h('img', { src: m.thumb.replace('image/jpeg', 'image/jpeg'), alt: '' }), useButtons(m, close, o.as));
+          if (o.as === 'background') { await setBgImage(m); msg.textContent = 'Done. Set as the background.'; }
+        } catch (e) { fail(e); }
+      };
+      c.append(h('h2', null, '✦ AI image'), h('p', { class: 'sub' }, 'Make a picture with ChatGPT or Gemini.'),
+        fld('Made by', prov.el), fld('Describe it', ta),
+        h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: () => improvePrompt(ta, msg, 'image') }, '✦ Improve my prompt')),
+        fld('Style', styles), msg, result,
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn ghost', onclick: close }, 'Close'), go));
+    });
+  }
+
+  // ---------------- AI video ----------------
+  function videoDialog(o) {
+    o = o || {};
+    modal(async (c, close) => {
+      const reopen = () => videoDialog(o);
+      const prov = await providerRow('video', null, reopen);
+      const ta = h('textarea', { rows: 3, placeholder: 'Describe the shot, e.g. slow drone shot over a misty forest at sunrise, birds flying' });
+      ta.value = o.prompt || '';
+      let res = '720p', startPic = o.image || null;
+      const resChips = chipsLocal([['720p', '720p'], ['1080p', '1080p']], res, (v) => { res = v; });
+      const pics = st.media.filter((m) => m.kind === 'image').slice(0, 24);
+      const picRow = h('div', { class: 'pick-row' });
+      const drawPics = () => {
+        picRow.innerHTML = '';
+        picRow.append(h('button', { class: 'pk none' + (!startPic ? ' on' : ''), onclick: () => { startPic = null; drawPics(); } }, 'None'));
+        for (const m of pics) picRow.append(h('button', { class: 'pk' + (startPic === m ? ' on' : ''), style: { backgroundImage: 'url(' + m.thumb + ')' }, onclick: () => { startPic = m; drawPics(); } }));
+      };
+      drawPics();
+      const msg = h('p', { class: 'muted', style: { fontSize: '12.5px' } }, 'Shape ' + aspectFor('video') + '. Video comes with sound. It usually takes one to a few minutes; keep Cliploom open.');
+      const result = h('div', { class: 'gen-result' });
+      const go = h('button', { class: 'btn primary' }, 'Generate video');
+      go.onclick = async () => {
+        const pr = ta.value.trim();
+        if (!pr) { toast('Describe the video first'); return; }
+        const pv = prov.get(); if (!pv) { aiSettingsDialog(reopen); return; }
+        try {
+          const blob = await busy(go, msg, 'Gemini is making your video…', () => AI.video(pv, pr, { aspect: aspectFor('video'), resolution: res, image: startPic ? startPic.blob : null }));
+          const m = await saveGenerated(blob, 'video', 'AI video: ' + pr.slice(0, 36), pr);
+          msg.textContent = 'Done (' + M.fmt(m.duration) + '). Saved in Generated.';
+          result.innerHTML = '';
+          result.append(h('video', { src: URL.createObjectURL(m.blob), controls: true, playsinline: true }), useButtons(m, close, o.as));
+        } catch (e) { fail(e); }
+      };
+      c.append(h('h2', null, '✦ AI video'), h('p', { class: 'sub' }, 'Make a short clip from words, or bring a photo to life.'),
+        fld('Made by', prov.el), fld('Describe it', ta),
+        h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: () => improvePrompt(ta, msg, 'video') }, '✦ Improve my prompt')),
+        pics.length ? fld('Start from a photo (optional)', picRow) : null,
+        fld('Quality', resChips), msg, result,
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn ghost', onclick: close }, 'Close'), go));
+    });
+  }
+  function chipsLocal(opts, cur, set) {
+    const box = h('div', { class: 'chips' });
+    for (const [v, l] of opts) { const b = h('button', { class: 'chip' + (v === cur ? ' on' : ''), onclick: () => { set(v); $$('.chip', box).forEach((x) => x.classList.toggle('on', x === b)); } }, l); box.append(b); }
+    return box;
+  }
+  function voiceSelect(prov, cur) {
+    const sel = h('select', { 'aria-label': 'Voice' });
+    const fill = (pv) => { sel.innerHTML = ''; for (const v of AI.VOICES[pv] || []) sel.append(h('option', { value: v, selected: v === cur }, v)); };
+    fill(prov || 'openai');
+    return { el: sel, fill, get: () => sel.value };
+  }
+
+  // ---------------- AI voice (text to speech) ----------------
+  function voiceDialog(o) {
+    o = o || {};
+    modal(async (c, close) => {
+      const reopen = () => voiceDialog(o);
+      let vs;
+      const prov = await providerRow('speech', (k) => vs.fill(k), reopen);
+      vs = voiceSelect(prov.get() || 'openai');
+      const ta = h('textarea', { rows: 4, placeholder: 'What should the voice say?' });
+      ta.value = o.text || '';
+      const style = h('input', { class: 'txt-in', placeholder: 'How it sounds (optional), e.g. warm and calm, excited, whisper' });
+      const msg = h('p', { class: 'muted', style: { fontSize: '12.5px' } });
+      const go = h('button', { class: 'btn primary' }, 'Make voice');
+      go.onclick = async () => {
+        const words = ta.value.trim();
+        if (!words) { toast('Type what to say first'); return; }
+        const pv = prov.get(); if (!pv) { aiSettingsDialog(reopen); return; }
+        try {
+          const blob = await busy(go, msg, AI.PROVIDERS[pv].name + ' is speaking…', () => AI.speech(pv, words, { voice: vs.get(), style: style.value.trim() }));
+          const m = await saveGenerated(blob, 'audio', 'AI voice: ' + words.slice(0, 30), words);
+          close();
+          await addSound(m);
+          if (o.caption !== false) addCaptionLines([{ start: M.find(st.project, st.sel).item.start, end: M.find(st.project, st.sel).item.start + m.duration, text: words }], true);
+        } catch (e) { fail(e); }
+      };
+      c.append(h('h2', null, '✦ AI voice'), h('p', { class: 'sub' }, 'Type it and a voice reads it out. It goes on the timeline at the playhead, with captions.'),
+        fld('Voice by', prov.el), fld('Words', ta), h('div', { class: 'two' }, fld('Voice', vs.el), fld('Style', style)), msg,
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn ghost', onclick: close }, 'Close'), go));
+    });
+  }
+
+  // ---------------- AI writer (titles and text) ----------------
+  function writerDialog() {
+    modal(async (c, close) => {
+      const prov = await providerRow('text', null, writerDialog);
+      const ta = h('textarea', { rows: 2, placeholder: 'What is the video about? e.g. my trip to Zanzibar, 3 tips for better sleep' });
+      let kind = 'hook';
+      const kinds = chipsLocal([['hook', 'Hook title'], ['tips', 'List of tips'], ['cta', 'Call to action'], ['caption', 'Post caption + hashtags']], kind, (v) => { kind = v; });
+      const out = h('div', { class: 'list-box' });
+      const msg = h('p', { class: 'muted', style: { fontSize: '12.5px' } });
+      const go = h('button', { class: 'btn primary' }, 'Write');
+      const ask = { hook: 'Write 5 short, punchy on-screen hook titles (max 8 words each)', tips: 'Write a list of 5 short on-screen tips (max 9 words each)', cta: 'Write 5 short on-screen calls to action (max 7 words each)', caption: 'Write 3 short social media post captions, each with 5 fitting hashtags' };
+      go.onclick = async () => {
+        if (!ta.value.trim()) { toast('Say what the video is about'); return; }
+        const pv = prov.get(); if (!pv) { aiSettingsDialog(writerDialog); return; }
+        try {
+          const list = await busy(go, msg, AI.PROVIDERS[pv].name + ' is writing…', () => AI.text(pv, ask[kind] + ' for a short vertical video about: ' + ta.value.trim() + '. Use the same language as the topic. Return a JSON array of strings.', { json: true }));
+          msg.textContent = 'Tap one to add it as text at the playhead' + (kind === 'caption' ? ' or copy it.' : '.');
+          out.innerHTML = '';
+          for (const line of (Array.isArray(list) ? list : []).map(String)) {
+            out.append(h('div', { class: 'post' }, h('div', { class: 'info' }, h('b', { style: { whiteSpace: 'pre-wrap' } }, line)),
+              h('button', { class: 'btn sm', onclick: () => { close(); addText({ y: kind === 'cta' ? 0.8 : 0.22, box: kind === 'hook' ? '#000000b0' : '' }, line); } }, 'Add'),
+              h('button', { class: 'btn sm', onclick: () => { navigator.clipboard && navigator.clipboard.writeText(line); toast('Copied'); } }, 'Copy')));
+          }
+        } catch (e) { fail(e); }
+      };
+      c.append(h('h2', null, '✦ AI writer'), h('p', { class: 'sub' }, 'Titles, tips and post captions written by Claude, ChatGPT or Gemini.'),
+        fld('Written by', prov.el), fld('Topic', ta), fld('What to write', kinds), msg, out,
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn ghost', onclick: close }, 'Close'), go));
+    });
+  }
+
+  // ---------------- AI dialogue scene ----------------
+  function dialogueDialog() {
+    modal(async (c, close) => {
+      const writer = await providerRow('text', null, dialogueDialog);
+      let vA, vB;
+      const voice = await providerRow('speech', (k) => { vA.fill(k); vB.fill(k); }, dialogueDialog);
+      const vp = voice.get() || 'openai';
+      vA = voiceSelect(vp, vp === 'gemini' ? 'Puck' : 'ash'); vB = voiceSelect(vp, vp === 'gemini' ? 'Kore' : 'coral');
+      const nameA = h('input', { class: 'txt-in', value: 'Sam' }), nameB = h('input', { class: 'txt-in', value: 'Mia' });
+      const topic = h('textarea', { rows: 2, placeholder: 'What happens? e.g. two friends argue about pineapple on pizza' });
+      let mood = 'funny', lines = 8, bg = 'none';
+      const moods = chipsLocal([['funny', 'Funny'], ['dramatic', 'Dramatic'], ['wholesome', 'Wholesome'], ['spooky', 'Spooky'], ['explainer', 'Explainer']], mood, (v) => { mood = v; });
+      const counts = chipsLocal([[6, '6 lines'], [8, '8 lines'], [12, '12 lines']], lines, (v) => { lines = v; });
+      const bgs = chipsLocal([['none', 'Keep my video'], ['image', 'AI picture behind it'], ['video', 'AI video behind it']], bg, (v) => { bg = v; });
+      const script = h('textarea', { rows: 8, placeholder: 'The script shows here. Each line: Name: words' });
+      const msg = h('p', { class: 'muted', style: { fontSize: '12.5px' } });
+      const write = h('button', { class: 'btn' }, '✦ Write script');
+      const make = h('button', { class: 'btn primary' }, 'Make scene');
+      write.onclick = async () => {
+        const pv = writer.get(); if (!pv) { aiSettingsDialog(dialogueDialog); return; }
+        if (!topic.value.trim()) { toast('Say what happens first'); return; }
+        try {
+          const arr = await busy(write, msg, AI.PROVIDERS[pv].name + ' is writing…', () => AI.text(pv,
+            'Write a ' + mood + ' dialogue of exactly ' + lines + ' short lines between ' + nameA.value + ' and ' + nameB.value + ' for a vertical short video. Scene: ' + topic.value.trim()
+            + '. Each line at most 20 words, natural spoken words, no stage directions. Use the language of the scene description. Return a JSON array of {"speaker": name, "line": words}.', { json: true }));
+          script.value = (Array.isArray(arr) ? arr : []).map((x) => (x.speaker || '?') + ': ' + (x.line || '')).join('\n');
+          msg.textContent = 'Edit the lines if you like, then tap Make scene.';
+        } catch (e) { fail(e); }
+      };
+      make.onclick = async () => {
+        const rows = script.value.split('\n').map((l) => l.match(/^\s*([^:]{1,30}):\s*(.+)$/)).filter(Boolean).map((m) => ({ who: m[1].trim(), line: m[2].trim() }));
+        if (!rows.length) { toast('Write or paste a script first (Name: words)'); return; }
+        const pv = voice.get(); if (!pv) { aiSettingsDialog(dialogueDialog); return; }
+        const p = st.project;
+        try {
+          await busy(make, msg, 'Recording voices…', async () => {
+            const voiceOf = (who) => (who.toLowerCase() === nameB.value.trim().toLowerCase() ? vB.get() : vA.get());
+            let t = engine.time;
+            const t0 = t;
+            const made = [];
+            for (let i = 0; i < rows.length; i++) {
+              msg.textContent = 'Voice ' + (i + 1) + ' of ' + rows.length + '…';
+              const blob = await AI.speech(pv, rows[i].line, { voice: voiceOf(rows[i].who) });
+              const m = await saveGenerated(blob, 'audio', rows[i].who + ': ' + rows[i].line.slice(0, 28), rows[i].line);
+              await engine.addMedia(m);
+              made.push({ m, start: t, who: rows[i].who, line: rows[i].line });
+              t += m.duration + 0.25;
+            }
+            let bgRec = null;
+            if (bg !== 'none') {
+              const desc = 'Background scene for a dialogue: ' + topic.value.trim() + '. No text, no captions.';
+              if (bg === 'image') {
+                const ip = await AI.preferred('image');
+                if (ip) { msg.textContent = 'Drawing the background…'; bgRec = await saveGenerated(await AI.image(ip, desc, { aspect: aspectFor('image') }), 'image', 'AI scene: ' + topic.value.trim().slice(0, 30), desc); }
+              } else if ((await AI.ready('video')).length) {
+                msg.textContent = 'Making the background video (a few minutes)…';
+                bgRec = await saveGenerated(await AI.video('gemini', desc + ' Ambient sound only, nobody speaks.', { aspect: aspectFor('video') }), 'video', 'AI scene: ' + topic.value.trim().slice(0, 30), desc);
+              }
+            }
+            edit(() => {
+              for (const x of made) {
+                const s = M.makeSound(x.m, x.start);
+                s.lane = M.freeLane(p, s.start, s.start + M.soundDur(s));
+                p.audio.push(s);
+                p.overlays.push(M.makeText(x.start, Object.assign({}, CAPTION_STYLE, { dur: Math.round(x.m.duration * 100) / 100, text: x.who + ': ' + x.line, caption: true })));
+              }
+              if (bgRec) {
+                const total = t - t0;
+                if (bgRec.kind === 'image') { const cl = M.makeClip(bgRec, { out: Math.round(total * 10) / 10, kenburns: true }); p.video.push(cl); } else {
+                  // loop the background video under the whole scene
+                  for (let left = total; left > 0.05; left -= bgRec.duration) p.video.push(M.makeClip(bgRec, { out: Math.min(bgRec.duration, Math.round(left * 100) / 100), volume: 0.3 }));
+                }
+              }
+            });
+            msg.textContent = 'Scene made: ' + rows.length + ' lines, ' + M.fmt(t - t0) + '.';
+          });
+          close();
+          if (isPhone()) closeSheets();
+          engine.seekTo(engine.time);
+          toast('Dialogue scene added');
+        } catch (e) { fail(e); }
+      };
+      c.append(h('h2', null, '✦ AI dialogue scene'), h('p', { class: 'sub' }, 'Two characters talk: the AI writes it, gives each one a voice and adds captions.'),
+        fld('Scene', topic), h('div', { class: 'two' }, fld('Character 1', nameA), fld('Character 2', nameB)),
+        fld('Mood', moods), fld('Length', counts), fld('Script written by', writer.el),
+        h('div', { class: 'row' }, write), fld('Script', script),
+        fld('Voices by', voice.el), h('div', { class: 'two' }, fld('Voice 1', vA.el), fld('Voice 2', vB.el)),
+        fld('Picture', bgs), msg,
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn ghost', onclick: close }, 'Close'), make));
+    });
+  }
+
+  // ---------------- AI avatar ----------------
+  function avatarDialog() {
+    modal(async (c, close) => {
+      const writer = await providerRow('text', null, avatarDialog);
+      let vs;
+      const voice = await providerRow('speech', (k) => vs.fill(k), avatarDialog);
+      vs = voiceSelect(voice.get() || 'openai');
+      let photo = null, mode = 'photo';
+      const pics = st.media.filter((m) => m.kind === 'image');
+      const picRow = h('div', { class: 'pick-row' });
+      const drawPics = () => {
+        picRow.innerHTML = '';
+        picRow.append(h('button', { class: 'pk none', onclick: () => { st.avatarPick = (m) => { photo = m; pics.unshift(m); drawPics(); }; $('#fileBg').click(); } }, '＋ Photo'));
+        for (const m of pics.slice(0, 30)) picRow.append(h('button', { class: 'pk' + (photo === m ? ' on' : ''), style: { backgroundImage: 'url(' + m.thumb + ')' }, onclick: () => { photo = m; drawPics(); } }));
+      };
+      drawPics();
+      const look = h('input', { class: 'txt-in', placeholder: 'Or describe a new avatar, e.g. friendly cartoon fox host with headphones' });
+      const words = h('textarea', { rows: 4, placeholder: 'What the avatar says' });
+      const about = h('input', { class: 'txt-in', placeholder: 'Topic for the AI to write about (optional)' });
+      const modes = chipsLocal([['photo', 'Talking photo (voice + motion)'], ['video', 'Real talking video (Gemini)']], mode, (v) => { mode = v; });
+      const msg = h('p', { class: 'muted', style: { fontSize: '12.5px' } });
+      const write = h('button', { class: 'btn sm' }, '✦ Write it for me');
+      write.onclick = async () => {
+        const pv = writer.get(); if (!pv) { aiSettingsDialog(avatarDialog); return; }
+        if (!about.value.trim()) { toast('Type a topic first'); return; }
+        try { words.value = await busy(write, msg, 'Writing…', () => AI.text(pv, 'Write what a presenter says to camera in a 15 to 25 second vertical video about: ' + about.value.trim() + '. Friendly, spoken style, no stage directions, same language as the topic. Only the words.')); msg.textContent = ''; } catch (e) { fail(e); }
+      };
+      const go = h('button', { class: 'btn primary' }, 'Make avatar');
+      go.onclick = async () => {
+        const say = words.value.trim();
+        if (!say) { toast('Type what the avatar says'); return; }
+        try {
+          await busy(go, msg, 'Making your avatar…', async () => {
+            let pic = photo;
+            if (!pic && look.value.trim()) {
+              const ip = await AI.preferred('image');
+              if (!ip) throw new Error('Add a ChatGPT or Gemini key to draw an avatar, or pick a photo.');
+              msg.textContent = 'Drawing the avatar…';
+              const desc = 'Portrait of ' + look.value.trim() + ', facing the camera, head and shoulders, plain soft background';
+              pic = await saveGenerated(await AI.image(ip, desc, { aspect: '1:1' }), 'image', 'AI avatar: ' + look.value.trim().slice(0, 30), desc);
+            }
+            if (!pic) throw new Error('Pick a photo or describe the avatar.');
+            const start = engine.time;
+            if (mode === 'video') {
+              msg.textContent = 'Gemini is making the talking video (a few minutes)…';
+              const blob = await AI.video('gemini', 'The person or character in this picture looks into the camera and speaks clearly and naturally, saying: "' + say + '". Steady camera, natural expressions, lips in sync with the words.', { aspect: aspectFor('video'), image: pic.blob });
+              const m = await saveGenerated(blob, 'video', 'AI avatar video', say);
+              await addLayer(m, true, { scale: 0.62, x: 0, y: 0.1, round: 0.06 });
+            } else {
+              const pv = voice.get(); if (!pv) throw new Error('Add a ChatGPT or Gemini key for the voice.');
+              msg.textContent = 'Recording the voice…';
+              const v = await saveGenerated(await AI.speech(pv, say, { voice: vs.get() }), 'audio', 'Avatar voice: ' + say.slice(0, 28), say);
+              await engine.addMedia(v);
+              await engine.addMedia(pic);
+              let lid;
+              edit(() => {
+                const p = st.project;
+                const l = M.makeLayer(pic, start, { out: Math.round(v.duration * 100) / 100, scale: 0.42, x: 0.22, y: -0.24, shape: 'circle', round: 0, border: '#ffffff', anim: 'talk', voiceId: v.id });
+                l.lane = M.freeRow(p, 'pip', l.start, l.start + M.clipDur(l));
+                p.pip.push(l); lid = l.id;
+                const s = M.makeSound(v, start); s.lane = M.freeLane(p, start, start + M.soundDur(s)); p.audio.push(s);
+                p.overlays.push(M.makeText(start, Object.assign({}, CAPTION_STYLE, { dur: Math.round(v.duration * 100) / 100, text: say, caption: true })));
+              });
+              st.sel = lid;
+            }
+          });
+          close();
+          if (isPhone()) closeSheets();
+          refresh(); engine.seekTo(engine.time);
+          toast('Avatar added');
+        } catch (e) { fail(e); }
+      };
+      c.append(h('h2', null, '✦ AI avatar'), h('p', { class: 'sub' }, 'A presenter that talks to camera, from your photo or one the AI draws.'),
+        fld('Face', picRow), look,
+        fld('Words', words), h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, about, write),
+        fld('Type', modes), fld('Voice by', voice.el), fld('Voice', vs.el), fld('Script written by', writer.el), msg,
+        h('p', { class: 'note' }, 'Talking photo: the voice plays while the picture moves gently, in a circle you can drag. Real talking video: Gemini animates the face with lip sync and its own voice. Only use photos of people who agreed to it.'),
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn ghost', onclick: close }, 'Close'), go));
+    });
+  }
+
+  // ---------------- Generated ----------------
+  function generatedDialog() {
+    modal((c, close) => {
+      const list = st.media.filter((m) => m.source === 'ai');
+      const grid = h('div', { class: 'media-grid' });
+      for (const m of list) {
+        grid.append(h('button', { class: 'mtile' + (m.kind === 'audio' ? ' snd-tile' : ''), title: m.prompt || m.name, style: { backgroundImage: m.thumb ? 'url(' + m.thumb + ')' : '' }, onclick: () => {
+          if (m.kind === 'audio') { close(); addSound(m); return; }
+          modal((c2, close2) => {
+            c2.append(h('h2', null, m.name), m.prompt ? h('p', { class: 'sub' }, m.prompt) : null,
+              m.kind === 'video' ? h('video', { src: URL.createObjectURL(m.blob), controls: true, playsinline: true, class: 'gen-media' }) : h('img', { src: URL.createObjectURL(m.blob), class: 'gen-media', alt: '' }),
+              useButtons(m, close2),
+              h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => toast(await Platform.save(m.blob, safeName(m.name) + (m.kind === 'video' ? '.mp4' : '.png'), { kind: m.kind === 'video' ? 'video' : 'image' })) }, 'Save to device'),
+                h('button', { class: 'btn danger', onclick: () => { close2(); deleteMedia(m); } }, 'Delete')));
+          });
+        } }, h('span', { class: 'd' }, m.kind === 'video' ? M.fmt(m.duration).replace(/\.\d$/, '') : m.kind === 'audio' ? '♪ ' + M.fmt(m.duration).replace(/\.\d$/, '') : 'Picture'),
+        m.kind === 'audio' ? h('span', { class: 'snd-name' }, m.name) : null));
+      }
+      c.append(h('h2', null, 'Generated'), h('p', { class: 'sub' }, 'Everything you made with AI, kept on this device.'),
+        list.length ? grid : h('p', { class: 'muted' }, 'Nothing yet. Try AI image, AI video or AI voice.'),
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: () => { close(); imageDialog(); } }, '✦ AI image'), h('button', { class: 'btn', onclick: () => { close(); videoDialog(); } }, '✦ AI video'), h('div', { class: 'grow' }), h('button', { class: 'btn ghost', onclick: close }, 'Close')));
+    });
+  }
+
+  // ---------------- AI tab (desktop side panel and phone sheet) ----------------
+  function tabAI(body) {
+    const card = (icon, title, sub, fn) => h('button', { class: 'src ai-card', onclick: fn }, h('span', { class: 'ic', html: Icons.svg(icon, 22) }), h('span', null, h('b', null, title), h('small', null, sub)));
+    body.append(h('div', { class: 'sec' }, h('h3', null, 'Generate media'),
+      h('div', { class: 'src-grid' },
+        card('image', 'AI image', 'ChatGPT or Gemini draws it', () => imageDialog()),
+        card('video', 'AI video', 'Gemini makes a clip with sound', () => videoDialog()),
+        card('chat', 'AI dialogue scene', 'Two voices, script and captions', () => dialogueDialog()),
+        card('avatar', 'AI avatar', 'A presenter that talks to camera', () => avatarDialog()),
+        card('voice', 'AI voice', 'Type it, hear it', () => voiceDialog()),
+        card('text', 'AI writer', 'Hooks, tips, post captions', () => writerDialog()),
+        card('captions', 'Auto captions', 'Words from the speech', () => setTab('captions')),
+        card('folder', 'Generated', 'Everything you made with AI', () => generatedDialog()))),
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => aiSettingsDialog(), html: Icons.svg('gear', 16) + ' AI keys' })));
+    AI.settings().then((cfg) => {
+      if (!Object.keys(cfg.keys).length) body.prepend(h('p', { class: 'note warn', style: { marginTop: 0 } }, 'Add your Claude, ChatGPT or Gemini key under AI keys to use these. Each provider bills your own account.'));
+    });
+  }
+
+  // ---------------- captions ----------------
+  const CAPTION_STYLE = { font: 'Poppins', weight: 800, size: 0.052, color: '#ffffff', stroke: '#000000', strokeW: 0.16, box: '', x: 0.5, y: 0.78, anim: 'pop', shadow: true };
+  const CAPTION_LOOKS = [
+    ['classic', 'Classic', {}],
+    ['box', 'Black box', { strokeW: 0, box: '#000000c0', shadow: false }],
+    ['yellow', 'Yellow pop', { color: '#ffe14d', anim: 'pop' }],
+    ['bold', 'Big bold', { font: 'Anton', weight: 400, size: 0.07, strokeW: 0.1 }],
+    ['clean', 'Clean', { strokeW: 0, shadow: true, font: 'Poppins', weight: 600, size: 0.045, anim: 'fade' }],
+    ['type', 'Typewriter', { font: 'Mono', weight: 500, strokeW: 0, box: '#000000a0', anim: 'type', size: 0.042 }],
+  ];
+  function addCaptionLines(lines, quiet) {
+    const p = st.project;
+    const look = (CAPTION_LOOKS.find((x) => x[0] === p.captionLook) || CAPTION_LOOKS[0])[2];
+    edit(() => {
+      for (const s of lines) {
+        const dur = Math.max(0.4, Math.round((s.end - s.start) * 100) / 100);
+        p.overlays.push(M.makeText(Math.max(0, Math.round(s.start * 100) / 100), Object.assign({}, CAPTION_STYLE, look, { dur, text: s.text, caption: true })));
+      }
+    });
+    if (!quiet) toast(lines.length + ' captions added');
+  }
+  /** The project's sound as small 16 kHz mono WAV pieces: [{ blob, offset }]. */
+  async function speechAudio(which) {
+    const p = st.project;
+    const keepAudio = (s) => { const m = mediaById(s.mediaId); return which === 'all' || (m && (m.source === 'recording' || m.source === 'ai' || m.fromVideo || m.source === 'tiktok')); };
+    const tmp = Object.assign({}, p, { audio: p.audio.filter(keepAudio) });
+    const keep = engine.project;
+    engine.project = tmp;
+    let buf;
+    try { buf = await engine.mixdown(16000); } finally { engine.project = keep; }
+    if (!buf) return [];
+    const L = buf.getChannelData(0), R = buf.numberOfChannels > 1 ? buf.getChannelData(1) : L;
+    const mono = new Float32Array(L.length);
+    for (let i = 0; i < L.length; i++) mono[i] = (L[i] + R[i]) / 2;
+    const CH = 16000 * 240; // 4-minute pieces stay well under every provider's upload limit
+    const out = [];
+    for (let off = 0; off < mono.length; off += CH) {
+      const part = mono.subarray(off, Math.min(mono.length, off + CH));
+      let peak = 0; for (let i = 0; i < part.length; i += 16) peak = Math.max(peak, Math.abs(part[i]));
+      if (peak < 0.005) continue; // silence
+      out.push({ blob: new Blob([S.encodeWav({ sampleRate: 16000, channels: [part] })], { type: 'audio/wav' }), offset: off / 16000 });
+    }
+    return out;
+  }
+  async function tabCaptions(body) {
+    const p = st.project;
+    const tok = {}; body._tok = tok;
+    const caps = p.overlays.filter((o) => o.caption);
+    const prov = await providerRow('transcribe', null, () => setTab('captions'));
+    const tprov = await providerRow('text', null, () => setTab('captions'));
+    if (body._tok !== tok) return; // the panel was redrawn meanwhile
+    let which = 'speech';
+    const lang = h('input', { class: 'txt-in', placeholder: 'Language (optional), e.g. English, Swahili, Arabic' });
+    const msg = h('p', { class: 'muted', style: { fontSize: '12.5px' } });
+    const go = h('button', { class: 'btn primary' }, '✦ Generate captions');
+    go.onclick = async () => {
+      const pv = prov.get(); if (!pv) { aiSettingsDialog(() => setTab('captions')); return; }
+      try {
+        const n = await busy(go, msg, 'Listening…', async () => {
+          msg.textContent = 'Preparing the sound…';
+          const parts = await speechAudio(which);
+          if (!parts.length) throw new Error('No speech found. Add a video with talking or a voice-over first.');
+          const all = [];
+          for (let i = 0; i < parts.length; i++) {
+            msg.textContent = AI.PROVIDERS[pv].name + ' is listening' + (parts.length > 1 ? ' (part ' + (i + 1) + ' of ' + parts.length + ')' : '') + '…';
+            const segs = await AI.transcribe(pv, parts[i].blob, { language: lang.value.trim() });
+            for (const s of segs) all.push({ start: s.start + parts[i].offset, end: Math.max(s.end, s.start + 0.4) + parts[i].offset, text: s.text });
+          }
+          if (!all.length) throw new Error('No words were heard.');
+          // long segments read badly on a phone: break them into pieces of about 6 words
+          const short = [];
+          for (const s of all) {
+            const w = s.text.split(/\s+/).filter(Boolean);
+            const n2 = Math.max(1, Math.ceil(w.length / 6));
+            for (let k = 0; k < n2; k++) {
+              const a = s.start + (s.end - s.start) * k / n2, b = s.start + (s.end - s.start) * (k + 1) / n2;
+              short.push({ start: a, end: b, text: w.slice(Math.round(k * w.length / n2), Math.round((k + 1) * w.length / n2)).join(' ') });
+            }
+          }
+          addCaptionLines(short, true);
+          return short.length;
+        });
+        toast(n + ' captions added');
+        renderTab();
+      } catch (e) { fail(e); }
+    };
+    const script = h('textarea', { rows: 4, placeholder: 'Paste your script. It is spread over the video by length.' });
+    const looks = h('div', { class: 'chips' });
+    for (const [k, l] of CAPTION_LOOKS) looks.append(h('button', { class: 'chip' + ((p.captionLook || 'classic') === k ? ' on' : ''), onclick: () => edit(() => {
+      p.captionLook = k;
+      const look = CAPTION_LOOKS.find((x) => x[0] === k)[2];
+      p.overlays.forEach((o) => { if (o.caption) Object.assign(o, CAPTION_STYLE, look, { x: o.x, y: o.y }); });
+      renderTab();
+    }) }, l));
+    const tLang = h('input', { class: 'txt-in', placeholder: 'Translate to, e.g. French' });
+    const tBtn = h('button', { class: 'btn' }, '✦ Translate captions');
+    tBtn.onclick = async () => {
+      const pv = tprov.get(); if (!pv) { aiSettingsDialog(() => setTab('captions')); return; }
+      const list = p.overlays.filter((o) => o.caption);
+      if (!list.length || !tLang.value.trim()) { toast(list.length ? 'Type a language' : 'Make captions first'); return; }
+      try {
+        const out = await busy(tBtn, msg, AI.PROVIDERS[pv].name + ' is translating…', () => AI.text(pv, 'Translate each caption line to ' + tLang.value.trim() + '. Keep them short and keep the order. Return a JSON array of strings with exactly ' + list.length + ' items.\n\n' + JSON.stringify(list.map((o) => o.text)), { json: true }));
+        if (!Array.isArray(out) || out.length !== list.length) throw new Error('The translation came back with a different number of lines. Try again.');
+        edit(() => list.forEach((o, i) => { o.text = String(out[i]); }));
+        msg.textContent = 'Translated ' + list.length + ' captions.';
+      } catch (e) { fail(e); }
+    };
+    body.append(
+      h('div', { class: 'sec' }, h('h3', null, 'Auto captions'),
+        h('p', { class: 'note', style: { marginTop: 0 } }, 'The AI listens to your video and writes the words on screen, timed to the speech.'),
+        fld('Listen with', prov.el),
+        fld('Listen to', chipsLocal([['speech', 'Clips and voice-overs'], ['all', 'All sound (with music)']], which, (v) => { which = v; })),
+        lang, msg, h('div', { class: 'row' }, go)),
+      h('div', { class: 'sec' }, h('h3', null, 'Look'), looks),
+      h('div', { class: 'sec' }, h('h3', null, 'From your script'), script,
+        h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => {
+          const txt = script.value.trim();
+          if (!txt) { toast('Paste a script first'); return; }
+          const parts = txt.split(/(?<=[.!?…])\s+|\n+/).map((x) => x.trim()).filter(Boolean);
+          const total = Math.max(2, M.videoEnd(p) || M.duration(p) || parts.length * 2);
+          const chars = parts.reduce((a, x) => a + x.length, 0) || 1;
+          let t = 0; const lines = [];
+          for (const x of parts) { const d = total * x.length / chars; lines.push({ start: t, end: t + d, text: x }); t += d; }
+          addCaptionLines(lines);
+          renderTab();
+        } }, 'Place over the video'))),
+      h('div', { class: 'sec' }, h('h3', null, 'Translate'), fld('Translated by', tprov.el), h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, tLang, tBtn)),
+      h('div', { class: 'sec' }, h('h3', null, caps.length + ' caption' + (caps.length === 1 ? '' : 's') + ' in this video'),
+        h('div', { class: 'row' },
+          h('button', { class: 'btn sm', disabled: !caps.length, onclick: () => edit(() => { p.overlays.forEach((o) => { if (o.caption) o.y = o.y > 0.5 ? 0.18 : 0.78; }); }) }, 'Move top / bottom'),
+          h('button', { class: 'btn sm danger', disabled: !caps.length, onclick: () => { if (confirm('Remove all ' + caps.length + ' captions?')) { edit(() => { p.overlays = p.overlays.filter((o) => !o.caption); }); renderTab(); } } }, 'Remove all'))));
+  }
+
+
   // ---------------- inspector ----------------
   function fld(label, control, value) {
     return h('div', { class: 'fld' }, h('label', null, h('span', null, label), value || ''), control);
@@ -950,7 +1727,7 @@
     if (!f) {
       body.append(head('Project'), h('div', { class: 'insp-b' },
         chips('Shape', Object.keys(M.RATIOS).map((r) => [r, r]), p.ratio, (v) => { p.ratio = v; sizeCanvas(); }),
-        chips('Background behind clips', [['blur', 'Blurred'], ['color', 'Colour']], p.bg.mode, (v) => { p.bg.mode = v; }),
+        chips('Background behind clips', [['blur', 'Blurred'], ['color', 'Colour'], ['image', 'Picture']], p.bg.mode, (v) => { if (v === 'image' && !p.bg.mediaId) { backgroundDialog(); return; } p.bg.mode = v; }),
         p.bg.mode === 'color' ? colors('Background colour', p.bg.color, (v) => { p.bg.color = v; }) : null,
         chips('Frame rate', [[24, '24'], [30, '30'], [60, '60']], p.fps, (v) => { p.fps = v; }),
         chips('HD (1080p preview and export)', [[true, 'On'], [false, 'Off']], p.hd !== false, (v) => { p.hd = v; sizeCanvas(); }),
@@ -1006,6 +1783,36 @@
         h('div', { class: 'two' }, range('Starts at', it.start, 0, Math.max(10, M.duration(p)), 0.1, secs, (v) => { it.start = v; }), range('Length', it.dur, 0.3, Math.max(15, it.dur * 2), 0.1, secs, (v) => { it.dur = v; })),
         chips('Place', [['top', 'Top'], ['mid', 'Middle'], ['low', 'Bottom']], it.y < 0.3 ? 'top' : it.y > 0.7 ? 'low' : 'mid', (v) => { it.x = 0.5; it.y = v === 'top' ? 0.16 : v === 'low' ? 0.82 : 0.5; }),
         actions));
+    } else if (f.list === 'pip') {
+      const m = mediaById(it.mediaId);
+      body.append(head(it.kind === 'image' ? 'Overlay photo' : 'Overlay video', h('small', { class: 'muted' }, secs(M.clipDur(it)))), h('div', { class: 'insp-b' },
+        range('Size', it.scale || 0.45, 0.1, 1.6, 0.01, pct, (v) => { it.scale = v; }),
+        h('div', { class: 'two' }, range('Move left/right', it.x || 0, -0.6, 0.6, 0.005, (v) => Math.round(v * 100), (v) => { it.x = v; }), range('Move up/down', it.y || 0, -0.6, 0.6, 0.005, (v) => Math.round(v * 100), (v) => { it.y = v; })),
+        chips('Place', [['tl', 'Top left'], ['tr', 'Top right'], ['c', 'Middle'], ['bl', 'Bottom left'], ['br', 'Bottom right']], null, (v) => { it.x = v === 'c' ? 0 : v[1] === 'l' ? -0.24 : 0.24; it.y = v === 'c' ? 0 : v[0] === 't' ? -0.26 : 0.26; }),
+        chips('Shape', [['rect', 'Rectangle'], ['round', 'Rounded'], ['circle', 'Circle']], it.shape === 'circle' ? 'circle' : it.round > 0 ? 'round' : 'rect', (v) => { it.shape = v === 'circle' ? 'circle' : 'rect'; it.round = v === 'round' ? 0.08 : 0; }),
+        colors('Border', it.border || '', (v) => { it.border = v; }, true),
+        range('Opacity', it.opacity == null ? 1 : it.opacity, 0.05, 1, 0.01, pct, (v) => { it.opacity = v; }),
+        chips('Blend', [['normal', 'Normal'], ['screen', 'Screen'], ['multiply', 'Multiply'], ['overlay', 'Overlay'], ['lighten', 'Lighten'], ['darken', 'Darken']], it.blend || 'normal', (v) => { it.blend = v; }),
+        chips('Rotate', [[0, '0°'], [-8, '−8°'], [8, '8°'], [90, '90°'], [180, '180°']], it.rotate || 0, (v) => { it.rotate = v; }),
+        chips('Appear', [['none', 'Cut'], ['fade', 'Fade in'], ['pop', 'Pop in']], it.anim || 'none', (v) => { it.anim = v; }),
+        it.kind === 'video' ? range('Volume', it.volume, 0, 2, 0.01, pct, (v) => { it.volume = v; }) : null,
+        it.kind === 'video' ? chips('Speed', [[0.5, '0.5×'], [1, '1×'], [1.5, '1.5×'], [2, '2×']], it.speed || 1, (v) => { it.speed = v; }) : range('Length', it.out - it.in, 0.5, 30, 0.1, secs, (v) => { it.in = 0; it.out = Math.round(v * 10) / 10; }),
+        range('Starts at', it.start, 0, Math.max(10, M.duration(p)), 0.1, secs, (v) => { it.start = v; }),
+        fld('Filter', h('select', { onchange: (e) => edit(() => { it.filter = e.target.value; }) }, Object.keys(Engine.FILTERS).map((k) => h('option', { value: k, selected: it.filter === k }, Engine.FILTERS[k].name)))),
+        range('Brightness', it.adjust.b, -100, 100, 1, String, (v) => { it.adjust.b = v; }),
+        range('Contrast', it.adjust.c, -100, 100, 1, String, (v) => { it.adjust.c = v; }),
+        range('Saturation', it.adjust.s, -100, 100, 1, String, (v) => { it.adjust.s = v; }),
+        h('p', { class: 'muted', style: { fontSize: '11.5px' } }, (m ? m.name : 'Missing file') + ' · drag it on the preview to move it'),
+        h('div', { class: 'actions' }, h('button', { class: 'btn sm', onclick: () => act('split') }, '✂ Split'), h('button', { class: 'btn sm', onclick: () => act('duplicate') }, '⧉ Copy'),
+          h('button', { class: 'btn sm', onclick: () => act('tomain') }, 'Move to main track'), h('button', { class: 'btn sm danger', onclick: () => act('delete') }, '🗑 Delete'))));
+    } else if (f.list === 'effects') {
+      const E = Engine.EFFECTS;
+      body.append(head('Effect: ' + ((E[it.type] || {}).name || it.type), h('small', { class: 'muted' }, secs(it.dur))), h('div', { class: 'insp-b' },
+        fld('Effect', h('select', { onchange: (e) => edit(() => { it.type = e.target.value; }) }, Object.keys(E).map((k) => h('option', { value: k, selected: it.type === k }, E[k].group + ' · ' + E[k].name)))),
+        range('Strength', it.strength == null ? 1 : it.strength, 0.1, 2, 0.05, pct, (v) => { it.strength = v; }),
+        h('div', { class: 'two' }, range('Starts at', it.start, 0, Math.max(10, M.duration(p)), 0.1, secs, (v) => { it.start = v; }), range('Length', it.dur, 0.3, Math.max(15, it.dur * 2), 0.1, secs, (v) => { it.dur = v; })),
+        h('button', { class: 'btn sm', onclick: () => edit(() => { const at = M.videoAt(p, it.start)[0]; if (at) { const r = M.layout(p)[at.index]; it.start = r.start; it.dur = Math.round((r.end - r.start) * 100) / 100; } }) }, 'Cover the whole clip'),
+        h('div', { class: 'actions' }, h('button', { class: 'btn sm', onclick: () => act('split') }, '✂ Split'), h('button', { class: 'btn sm', onclick: () => act('duplicate') }, '⧉ Copy'), h('button', { class: 'btn sm danger', onclick: () => act('delete') }, '🗑 Delete'))));
     } else {
       const m = mediaById(it.mediaId);
       body.append(head('Sound', h('small', { class: 'muted' }, secs(M.soundDur(it)))), h('div', { class: 'insp-b' },
@@ -1042,6 +1849,29 @@
       edit(() => { M.remove(p, st.sel); st.sel = null; });
     } else if (what === 'duplicate') {
       edit(() => { st.sel = M.duplicate(p, st.sel) || st.sel; });
+    } else if (what === 'tooverlay' && f.list === 'video') {
+      const m = mediaById(f.item.mediaId); if (!m) return;
+      const start = M.layout(p)[f.index].start;
+      let nid;
+      edit(() => {
+        const c = f.item;
+        const l = M.makeLayer(m, start, { in: c.in, out: c.out, speed: c.speed || 1, volume: c.volume, filter: c.filter, adjust: Object.assign({}, c.adjust) });
+        l.lane = M.freeRow(p, 'pip', start, start + M.clipDur(l));
+        M.remove(p, c.id); p.pip.push(l); nid = l.id;
+      });
+      select(nid);
+    } else if (what === 'tomain' && f.list === 'pip') {
+      const m = mediaById(f.item.mediaId); if (!m) return;
+      let nid;
+      edit(() => {
+        const l = f.item;
+        const c = M.makeClip(m, { in: l.in, out: l.out, speed: l.speed || 1, volume: l.volume, filter: l.filter, adjust: Object.assign({}, l.adjust) });
+        const L = M.layout(p);
+        const at = L.findIndex((r) => l.start < r.end);
+        p.video.splice(at < 0 ? p.video.length : at + (l.start > L[at].start ? 1 : 0), 0, c);
+        M.remove(p, l.id); nid = c.id;
+      });
+      select(nid);
     } else if (what === 'detach') {
       const m = f.list === 'video' && mediaById(f.item.mediaId);
       if (!m || f.item.kind !== 'video') { toast('Select a video clip'); return; }
@@ -1105,7 +1935,9 @@
     const vt = h('div', { class: 'track video', 'data-track': 'video' });
     if (phone) {
       const muted = p.video.length > 0 && p.video.every((c) => c.kind !== 'video' || c.volume === 0);
-      vt.append(head(muted ? 'mute' : 'volume', muted ? 'Unmute' : 'Mute clips', () => edit(() => { p.video.forEach((c) => { if (c.kind === 'video') c.volume = muted ? 1 : 0; }); toast(muted ? 'Clip sound on' : 'Clip sound off'); }), 'Mute or unmute the sound of all clips', muted));
+      const hv = head(muted ? 'mute' : 'volume', muted ? 'Unmute' : 'Mute clips', () => edit(() => { p.video.forEach((c) => { if (c.kind === 'video') c.volume = muted ? 1 : 0; }); toast(muted ? 'Clip sound on' : 'Clip sound off'); }), 'Mute or unmute the sound of all clips', muted);
+      hv.prepend(h('button', { class: 'hd-btn cover' + (p.cover != null ? ' on' : ''), title: 'Use the frame at the playhead as the project cover', onclick: (e) => { e.stopPropagation(); setCover(); }, html: (p.thumb ? '<img src="' + p.thumb + '" alt="">' : Icons.svg('cover', 22)) + '<span>Cover</span>' }));
+      vt.append(hv);
     }
     if (!p.video.length) vt.append(phone ? h('button', { class: 'add-lane big', style: { left: O + 'px' }, onclick: () => $('#fileMedia').click(), html: Icons.svg('plus', 20) + ' Add videos or photos' }) : h('span', { class: 'track-empty', style: { left: O + 'px' } }, 'Videos and photos (Media › tap to add)'));
     for (const r of M.layout(p)) {
@@ -1132,6 +1964,21 @@
       vt.append(el);
     }
     tracks.append(vt);
+    // overlay lanes (picture in picture)
+    if (p.pip.length) {
+      const n = Math.min(8, Math.max(...p.pip.map((l) => (l.lane || 0) + 1)));
+      for (let l = 0; l < n; l++) {
+        const ot = h('div', { class: 'track pip', 'data-track': 'pip', 'data-lane': l });
+        if (phone && l === 0) ot.append(head('overlay', null, () => setTab('overlay'), 'Overlay'));
+        for (const it of p.pip) if ((it.lane || 0) === l) {
+          const m = mediaById(it.mediaId);
+          const el = mk('o', it, X(it.start), M.clipDur(it) * pps - 2, (m ? m.name : 'Missing'));
+          if (m && m.thumb) el.style.backgroundImage = 'url(' + m.thumb + ')';
+          ot.append(el);
+        }
+        tracks.append(ot);
+      }
+    }
     // audio lanes
     const lanes = Math.max(1, ...p.audio.map((s) => s.lane + (phone ? 1 : 2)));
     for (let l = 0; l < Math.min(8, lanes); l++) {
@@ -1150,8 +1997,18 @@
       const tr = h('div', { class: 'track text', 'data-track': 'text' });
       if (phone && l === 0) tr.append(head('text', null, () => setTab('text'), 'Text'));
       if (!p.overlays.length) tr.append(phone ? h('button', { class: 'add-lane', style: { left: O + 'px' }, onclick: () => setTab('text'), html: Icons.svg('plus', 18) + ' Add text' }) : h('span', { class: 'track-empty', style: { left: O + 'px' } }, 'Text and stickers'));
-      for (const o of p.overlays) if (tl.lane.get(o.id) === l) tr.append(mk('t', o, X(o.start), o.dur * pps - 2, 'T  ' + o.text.replace(/\n/g, ' ')));
+      for (const o of p.overlays) if (tl.lane.get(o.id) === l) tr.append(mk('t' + (o.caption ? ' cap' : ''), o, X(o.start), o.dur * pps - 2, (o.caption ? '▭ ' : 'T  ') + o.text.replace(/\n/g, ' ')));
       tracks.append(tr);
+    }
+    // effect lanes
+    if (p.effects.length) {
+      const n = Math.min(8, Math.max(...p.effects.map((e) => (e.lane || 0) + 1)));
+      for (let l = 0; l < n; l++) {
+        const et = h('div', { class: 'track fx', 'data-track': 'effects', 'data-lane': l });
+        if (phone && l === 0) et.append(head('effects', null, () => setTab('effects'), 'Effects'));
+        for (const e of p.effects) if ((e.lane || 0) === l) et.append(mk('e', e, X(e.start), e.dur * pps - 2, '✦ ' + ((Engine.EFFECTS[e.type] || {}).name || e.type)));
+        tracks.append(et);
+      }
     }
     placePlayhead();
     renderBottomNav();
@@ -1201,6 +2058,8 @@
     for (const r of M.layout(p)) { pts.push(r.start, r.end); }
     for (const o of p.overlays) if (o.id !== exceptId) pts.push(o.start, o.start + o.dur);
     for (const s of p.audio) if (s.id !== exceptId) pts.push(s.start, s.start + M.soundDur(s));
+    for (const l of p.pip) if (l.id !== exceptId) pts.push(l.start, l.start + M.clipDur(l));
+    for (const x of p.effects) if (x.id !== exceptId) pts.push(x.start, x.start + x.dur);
     return pts;
   }
   function snapT(t, pts) {
@@ -1318,7 +2177,7 @@
         if (cur.list === 'video') M.trim(p, id, handle, dt);
         else {
           const o = JSON.parse(orig);
-          const edgeT = handle === 'start' ? o.start + dt : (cur.list === 'audio' ? o.start + M.soundDur(o) : o.start + o.dur) + dt;
+          const edgeT = handle === 'start' ? o.start + dt : (cur.list === 'audio' ? o.start + M.soundDur(o) : cur.list === 'pip' ? o.start + M.clipDur(o) : o.start + o.dur) + dt;
           const sn = snapT(edgeT, pts);
           M.trim(p, id, handle, dt + (sn - edgeT));
         }
@@ -1338,7 +2197,7 @@
         return;
       } else {
         const o = JSON.parse(orig);
-        const len = cur.list === 'audio' ? M.soundDur(o) : o.dur;
+        const len = cur.list === 'audio' ? M.soundDur(o) : cur.list === 'pip' ? M.clipDur(o) : o.dur;
         let ns = Math.max(0, o.start + dt);
         const s1 = snapT(ns, pts), s2 = snapT(ns + len, pts) - len;
         ns = Math.abs(s1 - ns) <= Math.abs(s2 - ns) ? s1 : s2;
@@ -1347,6 +2206,16 @@
           const under = document.elementFromPoint(ev.clientX, ev.clientY);
           const tr = under && under.closest && under.closest('.track.audio');
           if (tr) cur.item.lane = +tr.dataset.lane;
+        } else if (cur.list === 'pip' || cur.list === 'effects') {
+          const under = document.elementFromPoint(ev.clientX, ev.clientY);
+          const tr = under && under.closest && under.closest('.track[data-track="' + cur.list + '"]');
+          if (tr) cur.item.lane = +tr.dataset.lane;
+          else {
+            // dragged below the last lane of its kind: open a new lane
+            const lanes = $$('.track[data-track="' + cur.list + '"]');
+            const lastT = lanes[lanes.length - 1];
+            if (lastT && ev.clientY > lastT.getBoundingClientRect().bottom + 6 && ev.clientY < lastT.getBoundingClientRect().bottom + 50) cur.item.lane = Math.min(7, lanes.length);
+          }
         }
       }
       renderTimeline();
@@ -1373,18 +2242,22 @@
   function onPreviewDown(e) {
     const r = canvas.getBoundingClientRect();
     const nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height;
-    const hit = [...engine.boxes].reverse().find((b) => nx >= b.x - 0.02 && nx <= b.x + b.w + 0.02 && ny >= b.y - 0.02 && ny <= b.y + b.h + 0.02);
-    if (!hit) { if (!engine.playing) togglePlay(); else togglePlay(); return; }
+    const inBox = (b) => nx >= b.x - 0.02 && nx <= b.x + b.w + 0.02 && ny >= b.y - 0.02 && ny <= b.y + b.h + 0.02;
+    const hit = [...engine.boxes].reverse().find(inBox) || [...(engine.pipBoxes || [])].reverse().find(inBox);
+    if (!hit) { togglePlay(); return; }
     const f = M.find(st.project, hit.id); if (!f) return;
     if (st.sel !== hit.id) select(hit.id);
     const o = f.item; const ox = o.x, oy = o.y; let moved = false;
+    const isLayer = f.list === 'pip';
     canvas.setPointerCapture(e.pointerId);
     const move = (ev) => {
       const dx = (ev.clientX - e.clientX) / r.width, dy = (ev.clientY - e.clientY) / r.height;
       if (!moved && Math.abs(dx) + Math.abs(dy) < 0.01) return;
       if (!moved) { snap(); moved = true; }
-      o.x = Math.max(0, Math.min(1, ox + dx)); o.y = Math.max(0, Math.min(1, oy + dy));
-      if (Math.abs(o.x - 0.5) < 0.015) o.x = 0.5;
+      if (isLayer) { o.x = Math.max(-0.7, Math.min(0.7, ox + dx)); o.y = Math.max(-0.7, Math.min(0.7, oy + dy)); if (Math.abs(o.x) < 0.015) o.x = 0; } else {
+        o.x = Math.max(0, Math.min(1, ox + dx)); o.y = Math.max(0, Math.min(1, oy + dy));
+        if (Math.abs(o.x - 0.5) < 0.015) o.x = 0.5;
+      }
       engine.drawAt(engine.time, false);
     };
     const up = () => { canvas.removeEventListener('pointermove', move); canvas.removeEventListener('pointerup', up); if (moved) refresh(true); else if (isPhone()) openSheet('edit'); };
@@ -1487,7 +2360,23 @@
   $('#tlInner').addEventListener('pointerdown', onTimelineDown);
   canvas.addEventListener('pointerdown', onPreviewDown);
 
-  $('#fileMedia').onchange = async (e) => { const fs = [...e.target.files]; e.target.value = ''; importSheet(await importMedia(fs)); };
+  $('#fileMedia').onchange = async (e) => {
+    const fs = [...e.target.files]; e.target.value = '';
+    const asLayer = st.importAs === 'overlay'; st.importAs = null;
+    const recs = await importMedia(fs);
+    if (asLayer) { for (const m of recs) await addLayer(m, true); if (recs.length) toast(recs.length === 1 ? 'Overlay added' : recs.length + ' overlays added'); return; }
+    importSheet(recs);
+  };
+  $('#homeAi').onclick = () => aiSettingsDialog();
+  $('#fileBg').onchange = async (e) => {
+    const fs = [...e.target.files]; e.target.value = '';
+    const recs = await importMedia(fs);
+    const m = recs[0];
+    const pick = st.avatarPick; st.avatarPick = null;
+    const bg = st.bgPick; st.bgPick = null;
+    if (!m) return;
+    if (pick) pick(m); else if (bg) setBgImage(m);
+  };
   $('#fileAudio').onchange = async (e) => {
     const fs = [...e.target.files]; e.target.value = ''; let n = 0;
     for (const f of fs) { try { toast('Reading ' + f.name + '…', 8000); await importSound(f, 'file'); n++; } catch (er) { fail(er); } }
@@ -1528,6 +2417,7 @@
     if (document.body.classList.contains('pv-full')) { document.body.classList.remove('pv-full'); fitCanvas(); return; }
     if (st.sheet) return closeSheets();
     if (st.sel) return select(null);
+    if (st.navSub) { st.navSub = null; renderBottomNav(); return; }
     if (st.project) return closeProject();
     if (window.Capacitor && window.Capacitor.Plugins.App) window.Capacitor.Plugins.App.exitApp();
   });

@@ -49,6 +49,17 @@
     });
   }
 
+  // Video effects over the whole picture (names are our own).
+  const EFFECTS = {
+    shake: { name: 'Shake', group: 'Motion' }, pulse: { name: 'Beat zoom', group: 'Motion' }, spin: { name: 'Swing', group: 'Motion' },
+    flash: { name: 'Flash', group: 'Light' }, leak: { name: 'Light leak', group: 'Light' }, sparkle: { name: 'Sparkles', group: 'Light' },
+    glitch: { name: 'Glitch', group: 'Retro' }, rgb: { name: 'Color split', group: 'Retro' }, vhs: { name: 'VHS tape', group: 'Retro' }, grain: { name: 'Film grain', group: 'Retro' },
+    vignette: { name: 'Vignette', group: 'Look' }, blur: { name: 'Dream blur', group: 'Look' }, bw: { name: 'Black and white', group: 'Look' }, mirror: { name: 'Mirror', group: 'Look' },
+    open: { name: 'Fade in from black', group: 'Open & close' }, close: { name: 'Fade out to black', group: 'Open & close' }, bars: { name: 'Movie bars', group: 'Open & close' },
+  };
+  // small deterministic random so a frame always looks the same (preview = export)
+  function rnd(n) { const x = Math.sin(n * 12.9898 + 78.233) * 43758.5453; return x - Math.floor(x); }
+
   function layer(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
 
   class Engine {
@@ -100,6 +111,7 @@
       const ids = new Set();
       for (const c of this.project.video) if (c.kind === 'video' && c.volume > 0) ids.add(c.mediaId);
       for (const s of this.project.audio) ids.add(s.mediaId);
+      for (const l of this.project.pip || []) if (l.kind === 'video' && l.volume > 0) ids.add(l.mediaId);
       await Promise.all([...ids].map((id) => this.buffer(id)));
     }
 
@@ -120,7 +132,7 @@
 
     /** Drop players for clips that no longer exist. */
     prune() {
-      const ids = new Set(this.project.video.map((c) => c.id));
+      const ids = new Set(this.project.video.map((c) => c.id).concat((this.project.pip || []).map((l) => l.id)));
       for (const [id, v] of this.videos) if (!ids.has(id)) { v.pause(); v.removeAttribute('src'); v.load(); this.videos.delete(id); }
       const sids = new Set(this.project.audio.map((s) => s.id));
       for (const [id, a] of this.sounds) if (!sids.has(id)) { a.pause(); this.sounds.delete(id); }
@@ -141,8 +153,13 @@
     drawClip(ctx, src, c, W, H, local) {
       const p = this.project;
       ctx.save();
-      ctx.fillStyle = (p.bg && p.bg.color) || '#000';
+      ctx.fillStyle = (p.bg && p.bg.mode !== 'blur' && p.bg.color) || '#000';
       ctx.fillRect(0, 0, W, H);
+      const bgm = p.bg && p.bg.mode === 'image' && this.media.get(p.bg.mediaId);
+      if (bgm && bgm.el && bgm.el.naturalWidth) {
+        const bw = bgm.el.naturalWidth, bh = bgm.el.naturalHeight, bs = Math.max(W / bw, H / bh);
+        ctx.drawImage(bgm.el, (W - bw * bs) / 2, (H - bh * bs) / 2, bw * bs, bh * bs);
+      }
       if (!src || !src.w) { ctx.restore(); return; }
       const fitS = Math.min(W / src.w, H / src.h), fillS = Math.max(W / src.w, H / src.h);
       if (c.fit !== 'fill' && p.bg && p.bg.mode === 'blur' && Math.abs(fitS - fillS) > 0.01) {
@@ -165,6 +182,169 @@
       if (c.flip) ctx.scale(-1, 1);
       ctx.filter = filterCss(c);
       ctx.drawImage(src.el, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+    }
+
+    drawLayer(ctx, src, l, W, H, local, hit) {
+      if (!src || !src.w) return;
+      const fitS = Math.min(W / src.w, H / src.h) * (l.scale || 0.45);
+      const ease = (x) => 1 - Math.pow(1 - x, 3);
+      const inA = Math.min(1, local / 0.3);
+      let a = l.opacity == null ? 1 : l.opacity, sc = 1;
+      if (l.anim === 'fade') a *= inA;
+      if (l.anim === 'pop') sc = 0.6 + 0.4 * ease(inA);
+      let bob = 0, tilt = 0;
+      if (l.anim === 'talk') { // a talking photo: gentle nod and breathing while the voice plays
+        sc = (0.7 + 0.3 * ease(inA)) * (1 + 0.025 * Math.abs(Math.sin(local * 8.5)) + 0.01 * Math.sin(local * 1.7));
+        bob = Math.sin(local * 4.2) * H * 0.004; tilt = Math.sin(local * 1.3) * 0.03;
+      }
+      const dw = src.w * fitS * sc, dh = src.h * fitS * sc;
+      const cx = W / 2 + (l.x || 0) * W, cy = H / 2 + (l.y || 0) * H + bob;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, a));
+      if (l.blend && l.blend !== 'normal') ctx.globalCompositeOperation = l.blend;
+      ctx.translate(cx, cy);
+      if (l.rotate || tilt) ctx.rotate((l.rotate || 0) * Math.PI / 180 + tilt);
+      if (l.round > 0 || l.shape === 'circle') {
+        ctx.beginPath();
+        if (l.shape === 'circle') ctx.ellipse(0, 0, Math.min(dw, dh) / 2, Math.min(dw, dh) / 2, 0, 0, Math.PI * 2);
+        else if (ctx.roundRect) ctx.roundRect(-dw / 2, -dh / 2, dw, dh, Math.min(dw, dh) * l.round); else ctx.rect(-dw / 2, -dh / 2, dw, dh);
+        ctx.clip();
+      }
+      ctx.filter = filterCss(l);
+      if (l.shape === 'circle') { const d = Math.min(dw, dh), s2 = Math.max(d / src.w, d / src.h); ctx.drawImage(src.el, -src.w * s2 / 2, -src.h * s2 / 2, src.w * s2, src.h * s2); }
+      else ctx.drawImage(src.el, -dw / 2, -dh / 2, dw, dh);
+      ctx.restore();
+      if (l.border) {
+        ctx.save(); ctx.translate(cx, cy); if (l.rotate) ctx.rotate(l.rotate * Math.PI / 180);
+        ctx.strokeStyle = l.border; ctx.lineWidth = Math.max(2, W / 200); ctx.beginPath();
+        if (l.shape === 'circle') ctx.arc(0, 0, Math.min(dw, dh) / 2, 0, Math.PI * 2);
+        else if (ctx.roundRect) ctx.roundRect(-dw / 2, -dh / 2, dw, dh, Math.min(dw, dh) * (l.round || 0)); else ctx.rect(-dw / 2, -dh / 2, dw, dh);
+        ctx.stroke(); ctx.restore();
+      }
+      if (hit) hit.push({ id: l.id, x: (cx - dw / 2) / W, y: (cy - dh / 2) / H, w: dw / W, h: dh / H });
+    }
+
+    /** One video effect over the frame already on ctx. local = seconds into the effect. */
+    applyEffect(ctx, cv, e, local, W, H) {
+      const k = e.strength == null ? 1 : e.strength;
+      const prog = Math.min(1, local / Math.max(0.1, e.dur));
+      const fr = Math.floor(local * 30) + (e.seed || 0);
+      if (!this.fx || this.fx.width !== W || this.fx.height !== H) this.fx = layer(W, H);
+      const copy = () => { const c = this.fx.getContext('2d'); c.globalCompositeOperation = 'copy'; c.drawImage(cv, 0, 0); c.globalCompositeOperation = 'source-over'; return this.fx; };
+      ctx.save();
+      switch (e.type) {
+        case 'shake': {
+          const f = copy(); const a = W * 0.02 * k;
+          ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+          ctx.translate(W / 2 + (rnd(fr) - 0.5) * 2 * a, H / 2 + (rnd(fr + 7) - 0.5) * 2 * a); ctx.scale(1.06, 1.06);
+          ctx.drawImage(f, -W / 2, -H / 2); break;
+        }
+        case 'pulse': {
+          const f = copy(); const beat = Math.pow(1 - ((local * 2) % 1), 3);
+          const s2 = 1 + 0.08 * k * beat;
+          ctx.translate(W / 2, H / 2); ctx.scale(s2, s2); ctx.drawImage(f, -W / 2, -H / 2); break;
+        }
+        case 'spin': {
+          const f = copy(); const ang = Math.sin(local * 3) * 0.06 * k;
+          ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+          ctx.translate(W / 2, H / 2); ctx.rotate(ang); ctx.scale(1.12, 1.12); ctx.drawImage(f, -W / 2, -H / 2); break;
+        }
+        case 'flash': {
+          ctx.globalAlpha = 0.75 * k * Math.pow(1 - ((local * 2) % 1), 4);
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); break;
+        }
+        case 'leak': {
+          const x = W * (0.2 + 0.6 * (0.5 + 0.5 * Math.sin(local * 0.9))), y = H * (0.3 + 0.3 * Math.sin(local * 0.6 + 1));
+          const g = ctx.createRadialGradient(x, y, 0, x, y, Math.max(W, H) * 0.7);
+          g.addColorStop(0, 'rgba(255,170,60,' + 0.55 * k + ')'); g.addColorStop(0.5, 'rgba(255,60,90,' + 0.25 * k + ')'); g.addColorStop(1, 'rgba(255,60,90,0)');
+          ctx.globalCompositeOperation = 'screen'; ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); break;
+        }
+        case 'sparkle': {
+          ctx.globalCompositeOperation = 'lighter';
+          const n = Math.round(26 * k), base = Math.min(W, H);
+          for (let i = 0; i < n; i++) {
+            const life = (local * 0.8 + rnd(i * 3)) % 1, tw = Math.sin(life * Math.PI);
+            const x = rnd(i * 5 + Math.floor(local * 0.8 + rnd(i * 3))) * W, y = rnd(i * 11 + Math.floor(local * 0.8 + rnd(i * 3))) * H;
+            const r = base * (0.008 + 0.018 * rnd(i)) * tw;
+            ctx.fillStyle = 'rgba(255,250,220,' + (0.9 * tw) + ')';
+            ctx.beginPath(); ctx.moveTo(x, y - r * 3); ctx.lineTo(x + r * 0.5, y - r * 0.5); ctx.lineTo(x + r * 3, y); ctx.lineTo(x + r * 0.5, y + r * 0.5);
+            ctx.lineTo(x, y + r * 3); ctx.lineTo(x - r * 0.5, y + r * 0.5); ctx.lineTo(x - r * 3, y); ctx.lineTo(x - r * 0.5, y - r * 0.5); ctx.fill();
+          }
+          break;
+        }
+        case 'glitch': {
+          if (rnd(Math.floor(local * 8)) > 0.45 || k > 1.4) {
+            const f = copy(); const n = 6 + Math.floor(rnd(fr) * 6);
+            for (let i = 0; i < n; i++) {
+              const y = rnd(fr * 3 + i) * H, hh = H * (0.01 + rnd(fr + i * 9) * 0.06), dx = (rnd(fr + i) - 0.5) * W * 0.12 * k;
+              ctx.drawImage(f, 0, y, W, hh, dx, y, W, hh);
+            }
+            ctx.globalCompositeOperation = 'screen'; ctx.globalAlpha = 0.5; ctx.drawImage(f, W * 0.012 * k, 0);
+          }
+          break;
+        }
+        case 'rgb': {
+          const f = copy(); const d = W * 0.008 * k * (1 + Math.sin(local * 6));
+          if (!this.fx2 || this.fx2.width !== W || this.fx2.height !== H) this.fx2 = layer(W, H);
+          const c2 = this.fx2.getContext('2d');
+          ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+          ctx.globalCompositeOperation = 'lighter';
+          for (const [col, dx] of [['#f00', -d], ['#0ff', d]]) {
+            c2.globalCompositeOperation = 'copy'; c2.drawImage(f, 0, 0);
+            c2.globalCompositeOperation = 'multiply'; c2.fillStyle = col; c2.fillRect(0, 0, W, H);
+            ctx.drawImage(this.fx2, dx, 0);
+          }
+          c2.globalCompositeOperation = 'source-over';
+          break;
+        }
+        case 'vhs': {
+          const f = copy();
+          ctx.globalAlpha = 0.35; ctx.globalCompositeOperation = 'screen'; ctx.drawImage(f, W * 0.006, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+          ctx.fillStyle = 'rgba(0,0,0,' + 0.18 * k + ')';
+          const step = Math.max(3, Math.round(H / 240));
+          for (let y = 0; y < H; y += step * 2) ctx.fillRect(0, y, W, step);
+          const by = ((local * 0.25) % 1) * H;
+          ctx.drawImage(f, 0, by, W, H * 0.03, W * 0.02 * k, by, W, H * 0.03);
+          ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(0, by, W, H * 0.03);
+          break;
+        }
+        case 'grain': {
+          if (!this.noise) {
+            this.noise = layer(256, 256);
+            const nc = this.noise.getContext('2d'), id = nc.createImageData(256, 256);
+            for (let i = 0; i < id.data.length; i += 4) { const v = Math.random() * 255; id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 255; }
+            nc.putImageData(id, 0, 0);
+          }
+          ctx.globalAlpha = 0.16 * k; ctx.globalCompositeOperation = 'overlay';
+          const ox = Math.floor(rnd(fr) * 256), oy = Math.floor(rnd(fr + 3) * 256);
+          const scl = Math.max(1, Math.round(W / 720));
+          for (let y = -oy * scl; y < H; y += 256 * scl) for (let x = -ox * scl; x < W; x += 256 * scl) ctx.drawImage(this.noise, x, y, 256 * scl, 256 * scl);
+          break;
+        }
+        case 'vignette': {
+          const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.hypot(W, H) / 2);
+          g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,' + Math.min(0.95, 0.7 * k) + ')');
+          ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); break;
+        }
+        case 'blur': {
+          const f = copy(); ctx.filter = 'blur(' + Math.round(W / 90 * k) + 'px) brightness(1.08)';
+          ctx.globalAlpha = 0.85; ctx.drawImage(f, 0, 0); break;
+        }
+        case 'bw': {
+          const f = copy(); ctx.filter = 'grayscale(1) contrast(1.15)'; ctx.globalAlpha = Math.min(1, k); ctx.drawImage(f, 0, 0); break;
+        }
+        case 'mirror': {
+          const f = copy(); ctx.translate(W, 0); ctx.scale(-1, 1); ctx.drawImage(f, W / 2, 0, W / 2, H, W / 2, 0, W / 2, H); break;
+        }
+        case 'open': { ctx.globalAlpha = 1 - prog; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); break; }
+        case 'close': { ctx.globalAlpha = prog; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); break; }
+        case 'bars': {
+          const bh = H * 0.11 * Math.min(1, local / 0.5) * Math.min(1, k + 0.2);
+          ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, bh); ctx.fillRect(0, H - bh, W, bh); break;
+        }
+        default: break;
+      }
       ctx.restore();
     }
 
@@ -281,6 +461,15 @@
         ctx.globalAlpha = 1;
       }
       ctx.restore();
+      // overlay layers (picture in picture), lower lanes first
+      const pips = (p.pip || []).filter((l) => t >= l.start && t < l.start + M.clipDur(l)).sort((a, b) => (a.lane || 0) - (b.lane || 0));
+      if (pips.length) {
+        const ps = await Promise.all(pips.map((l) => this.source({ clip: l, time: Math.min(l.out - 0.001, l.in + (t - l.start) * (l.speed || 1)) }, exact)));
+        const pb = target ? null : [];
+        pips.forEach((l, i) => this.drawLayer(ctx, ps[i], l, W, H, t - l.start, pb));
+        if (pb) this.pipBoxes = pb;
+      } else if (!target) this.pipBoxes = [];
+      for (const e of p.effects || []) if (t >= e.start && t < e.start + e.dur) this.applyEffect(ctx, cv, e, t - e.start, W, H);
       const hit = target ? null : [];
       for (const o of p.overlays) if (t >= o.start && t < o.start + o.dur) this.drawText(ctx, o, t - o.start, W, H, hit);
       if (hit) this.boxes = hit;
@@ -408,6 +597,20 @@
         if (v.paused && !v.ended && v.currentTime < e.clip.out - 0.04) v.play().catch(() => {});
         if (inside && !main) main = { e, v };
       }
+      for (const l of p.pip || []) {
+        if (l.kind !== 'video' || t < l.start || t >= l.start + M.clipDur(l)) continue;
+        const v = this.video(l);
+        if (!v) continue;
+        active.add(l.id);
+        const want = l.in + (t - l.start) * (l.speed || 1);
+        if (v.playbackRate !== (l.speed || 1)) v.playbackRate = l.speed || 1;
+        if (!this.started.has(l.id)) { this.started.add(l.id); if (Math.abs(v.currentTime - want) > 0.05) v.currentTime = want; }
+        else if (!v.seeking && Math.abs(v.currentTime - want) > 0.6) v.currentTime = want;
+        const vol = l.volume > 0 ? l.volume : 0;
+        v.muted = vol === 0;
+        if (vol) this.setVolume(v, vol);
+        if (v.paused && !v.ended && v.currentTime < l.out - 0.04) v.play().catch(() => {});
+      }
       for (const [id, v] of this.videos) if (!active.has(id)) { if (!v.paused) v.pause(); this.started.delete(id); }
       // warm up the next clip so it starts without a black frame
       const nx = M.layout(p).find((r) => r.start > t && r.start - t < 1.5 && r.clip.kind === 'video');
@@ -485,6 +688,7 @@
 
   Engine.FILTERS = FILTERS;
   Engine.FONTS = FONTS;
+  Engine.EFFECTS = EFFECTS;
   Engine.filterCss = filterCss;
   root.Engine = Engine;
 })(window);

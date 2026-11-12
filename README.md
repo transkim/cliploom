@@ -7,8 +7,26 @@ A simple video editor for Windows and Android: put clips on a timeline, cut and 
 - **Timeline**: main video track (videos and photos), text/sticker track, several sound lanes. Drag to move or reorder, drag the white handles to trim, split at the playhead, copy, delete, undo/redo, zoom.
 - **Clips**: volume, speed 0.25×–4×, fit/fill, zoom, move, rotate, mirror, 14 filters, brightness/contrast/saturation/warmth, photo slow zoom, 10 transitions (fade, dip to black, flash, slide, push, up, wipe, circle, zoom, blur).
 - **Text and stickers**: 13 styles, 7 bundled fonts (OFL), outline, background box, shadow/glow, 6 animations; drag them on the preview.
-- **Shapes**: 9:16, 16:9, 1:1, 4:5, 3:4, 21:9 with a blurred or coloured background.
+- **Shapes**: 9:16, 16:9, 1:1, 4:5, 3:4, 21:9 (Aspect ratio) with a blurred, coloured or picture background (Background).
+- **Overlay**: videos and photos on top of the main video (picture in picture) on their own rows: size, place, rectangle/rounded/circle, border, opacity, blend modes, fade/pop in, filters.
+- **Effects**: 17 video effects on their own rows (shake, beat zoom, swing, flash, light leak, sparkles, glitch, colour split, VHS, film grain, vignette, dream blur, black and white, mirror, fade in/out, movie bars), with strength and length.
+- **Captions**: auto captions from the speech (ChatGPT or Gemini), from a pasted script, six looks, translate with Claude/ChatGPT/Gemini.
+- **Cover**: pick the frame used as the project picture.
 - **Export**: MP4 (H.264, VP9 fallback) at 480p–2K, 24/30/60 fps, rendered frame by frame with WebCodecs; or the soundtrack alone as WAV.
+
+## AI (your own keys)
+
+Open **AI keys** and paste keys for any of Claude (Anthropic), ChatGPT (OpenAI) and Gemini (Google). Keys stay in this device's storage; requests go straight to the provider (on Windows through the app's main process, limited to the three provider hosts) and are billed to your account.
+
+| Tool | Claude | ChatGPT | Gemini |
+|---|---|---|---|
+| AI image | | gpt-image-2.6 | Nano Banana 2.1 |
+| AI video | | (Sora API shut down 2026-09-24) | Omni Flash |
+| AI voice, dialogue voices | | gpt-4o-mini-tts | 3.8 Flash TTS |
+| Auto captions | | whisper-1 | 3.8 Flash (audio) |
+| Scripts, prompts, titles, translation | Opus 5.5 | gpt-6-luna | 3.8 Flash |
+
+Generate media has AI image, AI video, AI dialogue scene (two characters: script, voices, captions, optional AI picture or video behind) and Generated (everything made with AI). AI avatar makes a talking photo (voice + gentle motion in a circle) or a real talking video with Gemini. Model names can be changed under AI keys › Model names, since providers rename them often. Checked against the provider docs on 2026-11-12.
 
 ## Sounds
 

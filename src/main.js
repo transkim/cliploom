@@ -59,6 +59,19 @@ ipcMain.handle('cliploom:fetch', async (_e, url) => {
   } catch (e) { return { error: (e && e.message) || String(e) }; }
 });
 
+// AI providers only (the keys the user typed in AI settings); the renderer cannot use this as a general proxy.
+const AI_HOSTS = /^https:\/\/(api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com|[a-z0-9.-]+\.googleusercontent\.com)(\/|$)/i;
+ipcMain.handle('cliploom:http', async (_e, req) => {
+  try {
+    if (!req || typeof req.url !== 'string' || !AI_HOSTS.test(req.url)) return { error: 'Blocked address' };
+    const body = req.body == null ? undefined : typeof req.body === 'string' ? req.body : Buffer.from(req.body);
+    const res = await net.fetch(req.url, { method: req.method || 'GET', headers: req.headers || {}, body, redirect: 'follow' });
+    const type = res.headers.get('content-type') || '';
+    if (req.binary && res.ok) return { status: res.status, type, bytes: Buffer.from(await res.arrayBuffer()) };
+    return { status: res.status, type, text: await res.text() };
+  } catch (e) { return { error: (e && e.message) || String(e) }; }
+});
+
 ipcMain.handle('cliploom:open', (_e, url) => { if (/^https:\/\//.test(url)) shell.openExternal(url); });
 
 app.on('window-all-closed', () => app.quit());
