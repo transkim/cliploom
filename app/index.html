@@ -28,11 +28,10 @@
   <!-- Editor -->
   <section id="editor" class="screen hidden">
     <header class="ed-top">
-      <button id="back" class="icon-btn" title="Projects" aria-label="Back to projects">&#x2039;</button>
+      <button id="back" class="icon-btn" title="Projects" aria-label="Back to projects" data-icon="close"></button>
       <input id="projName" class="proj-name" spellcheck="false" aria-label="Project name">
       <div class="grow"></div>
-      <button id="undo" class="icon-btn" title="Undo (Ctrl+Z)" aria-label="Undo">&#x21B6;</button>
-      <button id="redo" class="icon-btn" title="Redo (Ctrl+Y)" aria-label="Redo">&#x21B7;</button>
+      <button id="hdPill" class="pill" title="Preview and export quality">1080p HD</button>
       <button id="exportBtn" class="btn primary">Export</button>
     </header>
 
@@ -52,9 +51,15 @@
       <section class="stage">
         <div class="pv-wrap" id="pvWrap"><canvas id="pv" width="540" height="960"></canvas><div id="pvEmpty" class="pv-empty">Add videos or photos from Media</div></div>
         <div class="transport">
-          <span id="tNow" class="tc">0:00.0</span>
-          <button id="play" class="play" aria-label="Play">&#9654;</button>
-          <span id="tDur" class="tc dim">0:00.0</span>
+          <div class="tp-side">
+            <button id="fullBtn" class="icon-btn" title="Full screen preview" aria-label="Full screen preview" data-icon="full"></button>
+            <span class="tc"><span id="tNow">0:00.0</span> <span class="dim">/ <span id="tDur">0:00.0</span></span></span>
+          </div>
+          <button id="play" class="play" aria-label="Play"></button>
+          <div class="tp-side right">
+            <button id="undo" class="icon-btn" title="Undo (Ctrl+Z)" aria-label="Undo" data-icon="undo"></button>
+            <button id="redo" class="icon-btn" title="Redo (Ctrl+Y)" aria-label="Redo" data-icon="redo"></button>
+          </div>
         </div>
       </section>
 
@@ -66,14 +71,15 @@
 
     <section class="tl">
       <div class="tl-tools">
-        <button data-act="split" title="Split at playhead (S)">&#x2702; Split</button>
-        <button data-act="delete" title="Delete (Del)">&#x1F5D1; Delete</button>
-        <button data-act="duplicate" title="Duplicate">&#x29C9; Copy</button>
-        <button data-act="detach" title="Move the clip's sound to its own track">&#x266B; Detach audio</button>
-        <button data-act="addtext" title="Add text at playhead">T+ Text</button>
+        <button data-act="split" title="Split at playhead (S)"><b>&#x2702;</b> <span>Split</span></button>
+        <button data-act="delete" title="Delete (Del)"><b>&#x1F5D1;</b> <span>Delete</span></button>
+        <button data-act="duplicate" title="Duplicate"><b>&#x29C9;</b> <span>Copy</span></button>
+        <button data-act="detach" title="Move the clip's sound to its own track"><b>&#x266B;</b> <span>Detach audio</span></button>
+        <button data-act="addtext" title="Add text at playhead"><b>T+</b> <span>Text</span></button>
         <div class="grow"></div>
         <label class="zoom">&#x1F50D;<input id="zoom" type="range" min="10" max="300" value="60" aria-label="Timeline zoom"></label>
       </div>
+      <div class="tl-wrap">
       <div class="tl-scroll" id="tlScroll">
         <div class="tl-inner" id="tlInner">
           <div class="ruler" id="ruler"></div>
@@ -81,16 +87,11 @@
           <div class="playhead" id="playhead"><i></i></div>
         </div>
       </div>
+      <button id="addClipBtn" class="add-clip" aria-label="Add clips" data-icon="plus"></button>
+      </div>
     </section>
 
-    <nav class="bottom-nav" id="bottomNav">
-      <button data-tab="media">&#x1F3AC;<span>Media</span></button>
-      <button data-tab="sounds">&#x266A;<span>Sounds</span></button>
-      <button data-tab="text">T<span>Text</span></button>
-      <button data-tab="stickers">&#x263A;<span>Stickers</span></button>
-      <button data-tab="filters">&#x25D0;<span>Filters</span></button>
-      <button data-tab="edit">&#x2699;<span>Edit</span></button>
-    </nav>
+    <nav class="bottom-nav" id="bottomNav"></nav>
   </section>
 
   <div id="modal" class="modal hidden" role="dialog" aria-modal="true"><div class="modal-card" id="modalCard"></div></div>
@@ -102,6 +103,7 @@
   <input id="fileTikTok" type="file" accept=".zip,.json,application/zip,application/json" hidden>
 
   <script src="vendor/mp4-muxer.js"></script>
+  <script src="js/icons.js"></script>
   <script src="js/model.js"></script>
   <script src="js/sources.js"></script>
   <script src="js/store.js"></script>
