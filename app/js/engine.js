@@ -56,6 +56,7 @@
       this.canvas = canvas;
       this.media = new Map(); // id -> { id, kind, blob, url, duration, w, h, el, buffer, bufferP }
       this.videos = new Map(); // clipId -> HTMLVideoElement (one per clip so transitions can show two)
+      this.sounds = new Map(); // soundId -> HTMLAudioElement (preview only; export decodes)
       this.project = null;
       this.time = 0;
       this.playing = false;
@@ -121,6 +122,8 @@
     prune() {
       const ids = new Set(this.project.video.map((c) => c.id));
       for (const [id, v] of this.videos) if (!ids.has(id)) { v.pause(); v.removeAttribute('src'); v.load(); this.videos.delete(id); }
+      const sids = new Set(this.project.audio.map((s) => s.id));
+      for (const [id, a] of this.sounds) if (!sids.has(id)) { a.pause(); this.sounds.delete(id); }
     }
 
     async source(entry, exact) {
@@ -143,10 +146,16 @@
       if (!src || !src.w) { ctx.restore(); return; }
       const fitS = Math.min(W / src.w, H / src.h), fillS = Math.max(W / src.w, H / src.h);
       if (c.fit !== 'fill' && p.bg && p.bg.mode === 'blur' && Math.abs(fitS - fillS) > 0.01) {
-        ctx.filter = 'blur(' + Math.round(Math.max(W, H) / 40) + 'px) brightness(0.7)';
-        const bw = src.w * fillS * 1.1, bh = src.h * fillS * 1.1;
-        ctx.drawImage(src.el, (W - bw) / 2, (H - bh) / 2, bw, bh);
-        ctx.filter = 'none';
+        // cheap blur that phones can do every frame: shrink to a few pixels, stretch back up
+        const tw = 24, th = Math.max(1, Math.round(24 * H / W));
+        if (!this.tiny) this.tiny = layer(tw, th);
+        if (this.tiny.width !== tw || this.tiny.height !== th) { this.tiny.width = tw; this.tiny.height = th; }
+        const tc = this.tiny.getContext('2d');
+        const ts = Math.max(tw / src.w, th / src.h) * 1.1;
+        tc.drawImage(src.el, (tw - src.w * ts) / 2, (th - src.h * ts) / 2, src.w * ts, src.h * ts);
+        ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(this.tiny, 0, 0, W, H);
+        ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(0, 0, W, H);
       }
       let s = (c.fit === 'fill' ? fillS : fitS) * (c.zoom || 1);
       if (c.kind === 'image' && c.kenburns) s *= 1 + 0.12 * Math.min(1, local / Math.max(0.1, M.clipDur(c)));
@@ -306,49 +315,121 @@
       return nodes;
     }
 
+    /** Route a media element's sound through Web Audio so volume can go above 100% and fade. */
+    gainFor(el) {
+      if (!el._gain) {
+        try {
+          const src = this.actx.createMediaElementSource(el);
+          el._gain = this.actx.createGain();
+          src.connect(el._gain).connect(this.actx.destination);
+        } catch (_) { el._gain = { gain: { value: 1 }, fake: true }; }
+      }
+      return el._gain;
+    }
+    setVolume(el, v) {
+      const g = this.gainFor(el);
+      if (g.fake) { el.volume = Math.max(0, Math.min(1, v)); return; }
+      el.volume = 1;
+      g.gain.value = Math.max(0, v);
+    }
+
+    sound(s) {
+      let a = this.sounds.get(s.id);
+      const m = this.media.get(s.mediaId);
+      if (!m) return null;
+      if (!a || a.dataset.media !== s.mediaId) {
+        if (a) { a.pause(); a.removeAttribute('src'); a.load(); }
+        a = document.createElement('audio');
+        a.preload = 'auto'; a.dataset.media = s.mediaId; a.src = m.url;
+        this.sounds.set(s.id, a);
+      }
+      return a;
+    }
+
+    /**
+     * Real-time preview. Starts at once (nothing is decoded first): pictures and sound come from
+     * <video>/<audio> elements. The clock follows the playing video, so a slow seek on a phone
+     * makes the preview wait instead of seeking over and over.
+     */
     async play() {
       if (this.playing) return;
       const dur = M.duration(this.project);
       if (dur <= 0) return;
       if (this.time >= dur - 0.05) this.time = 0;
-      await this.loadAllAudio();
       if (!this.actx) this.actx = new AudioContext({ latencyHint: 'interactive' });
-      if (this.actx.state === 'suspended') await this.actx.resume();
+      if (this.actx.state === 'suspended') this.actx.resume().catch(() => {});
       this.playing = true;
-      const from = this.time;
-      const a0 = this.actx.currentTime + 0.08;
-      this.nodes = this.scheduleAudio(this.actx, this.actx.destination, from, a0);
+      let t = this.time, last = performance.now();
+      this.started = new Set();
       const tick = () => {
         if (!this.playing) return;
-        const t = from + Math.max(0, this.actx.currentTime - a0);
+        const now = performance.now();
+        const wall = Math.min(0.1, (now - last) / 1000);
+        last = now;
+        const main = this.syncMedia(t);
+        if (main) {
+          const v = main.v, c = main.e.clip;
+          const clipStart = t - main.e.local;
+          if (v.ended || v.currentTime >= c.out - 0.04) t += wall; // clip finished: move on
+          else if (!v.paused && !v.seeking && v.readyState >= 2) {
+            const vt = clipStart + (v.currentTime - c.in) / (c.speed || 1);
+            t = Math.max(t, Math.min(vt, t + 0.25));
+          } // else: still loading/seeking, hold the clock
+        } else t += wall;
         if (t >= dur) { this.pause(); this.time = dur; this.drawAt(dur - 0.01, true); if (this.onEnd) this.onEnd(); return; }
         this.time = t;
-        this.syncVideos(t);
         this.drawAt(t, false);
         if (this.onTime) this.onTime(t);
         this.raf = requestAnimationFrame(tick);
       };
-      this.syncVideos(from, true);
       this.raf = requestAnimationFrame(tick);
     }
 
-    syncVideos(t, force) {
+    /** Start/stop/steer every media element for time t. Returns the video that drives the clock. */
+    syncMedia(t) {
+      const p = this.project;
       const active = new Set();
-      for (const e of M.videoAt(this.project, t)) {
+      let main = null;
+      for (const e of M.videoAt(p, t)) {
         if (e.clip.kind !== 'video') continue;
         const v = this.video(e.clip);
         if (!v) continue;
         active.add(e.clip.id);
         const rate = e.clip.speed || 1;
         if (v.playbackRate !== rate) v.playbackRate = rate;
-        if (force || v.paused || Math.abs(v.currentTime - e.time) > 0.3) { v.currentTime = e.time; }
-        if (v.paused) v.play().catch(() => {});
+        const inside = e.local >= 0 && e.local < M.clipDur(e.clip);
+        if (!this.started.has(e.clip.id)) {
+          this.started.add(e.clip.id);
+          if (Math.abs(v.currentTime - e.time) > 0.05) v.currentTime = e.time;
+        } else if (!inside && !v.seeking && Math.abs(v.currentTime - e.time) > 0.6) v.currentTime = e.time;
+        const vol = e.clip.volume > 0 ? e.clip.volume : 0;
+        v.muted = vol === 0;
+        if (vol) this.setVolume(v, vol);
+        if (v.paused && !v.ended && v.currentTime < e.clip.out - 0.04) v.play().catch(() => {});
+        if (inside && !main) main = { e, v };
       }
+      for (const [id, v] of this.videos) if (!active.has(id)) { if (!v.paused) v.pause(); this.started.delete(id); }
       // warm up the next clip so it starts without a black frame
-      const L = M.layout(this.project);
-      const nx = L.find((r) => r.start > t && r.start - t < 1.2 && r.clip.kind === 'video');
-      if (nx && !active.has(nx.clip.id)) { const v = this.video(nx.clip); if (v && v.paused && Math.abs(v.currentTime - nx.clip.in) > 0.05) v.currentTime = nx.clip.in; }
-      for (const [id, v] of this.videos) if (!active.has(id) && !v.paused) v.pause();
+      const nx = M.layout(p).find((r) => r.start > t && r.start - t < 1.5 && r.clip.kind === 'video');
+      if (nx && !active.has(nx.clip.id)) { const v = this.video(nx.clip); if (v && v.paused && !v.seeking && Math.abs(v.currentTime - nx.clip.in) > 0.05) v.currentTime = nx.clip.in; }
+
+      const on = new Set();
+      for (const s of p.audio) {
+        const d = M.soundDur(s);
+        if (t < s.start || t >= s.start + d || !(s.volume > 0)) continue;
+        const a = this.sound(s);
+        if (!a) continue;
+        on.add(s.id);
+        const want = s.in + (t - s.start);
+        if (a.paused || Math.abs(a.currentTime - want) > 0.3) { if (!a.seeking) a.currentTime = want; }
+        let g = s.volume;
+        if (s.fadeIn > 0 && t - s.start < s.fadeIn) g *= (t - s.start) / s.fadeIn;
+        if (s.fadeOut > 0 && s.start + d - t < s.fadeOut) g *= (s.start + d - t) / s.fadeOut;
+        this.setVolume(a, g);
+        if (a.paused) a.play().catch(() => {});
+      }
+      for (const [id, a] of this.sounds) if (!on.has(id) && !a.paused) a.pause();
+      return main;
     }
 
     pause() {
@@ -356,7 +437,8 @@
       cancelAnimationFrame(this.raf);
       for (const n of this.nodes || []) { try { n.stop(); } catch (_) { /* done */ } }
       this.nodes = [];
-      for (const v of this.videos.values()) v.pause();
+      for (const v of this.videos.values()) { v.pause(); v.muted = true; }
+      for (const a of this.sounds.values()) a.pause();
     }
 
     async seekTo(t) {
@@ -387,7 +469,7 @@
       const dur = M.duration(p);
       if (dur <= 0) throw new Error('Add a clip first.');
       this.pause();
-      if (o.onProgress) o.onProgress(0, 'Mixing sound…');
+      if (o.onProgress) o.onProgress(0, 'Preparing sound…');
       const audio = await this.mixdown(48000);
       const cv = layer(w, h);
       const frames = Math.max(1, Math.ceil(dur * fps));

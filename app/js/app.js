@@ -148,18 +148,64 @@
   }
 
   /** Audio file -> sound in the library. */
-  async function importSound(blob, source, name) {
-    const buf = await decode(blob).catch(() => null);
-    if (!buf) throw new Error('Cannot read the sound in ' + (name || blob.name || 'this file'));
-    return saveMedia({ id: M.uid('s'), name: name || (blob.name || 'Sound').replace(/\.[^.]+$/, ''), kind: 'audio', type: blob.type || 'audio/*', blob, duration: buf.duration, peaks: bufferPeaks(buf), source });
+  /** Length of a sound (or a video's sound) from its metadata only: fast even for big phone videos. */
+  function probeAudio(blob) {
+    return new Promise((resolve) => {
+      const a = document.createElement('audio');
+      a.preload = 'metadata';
+      const url = URL.createObjectURL(blob);
+      let done = false;
+      const fin = (d) => { if (done) return; done = true; URL.revokeObjectURL(url); a.removeAttribute('src'); resolve(d); };
+      a.onerror = () => fin(null);
+      a.onloadedmetadata = () => {
+        if (isFinite(a.duration) && a.duration > 0) return fin(a.duration);
+        // recordings (webm) report no length until we seek to the end
+        a.ondurationchange = () => { if (isFinite(a.duration) && a.duration > 0) fin(a.duration); };
+        a.currentTime = 1e7;
+      };
+      a.src = url;
+      setTimeout(() => fin(null), 15000);
+    });
   }
 
-  /** Video file -> its soundtrack as a WAV sound in the library. */
+  // Waveforms are drawn later, one file at a time, so importing never waits for a full decode.
+  const peakQueue = [];
+  let peakBusy = false;
+  function queuePeaks(rec) { peakQueue.push(rec); runPeaks(); }
+  async function runPeaks() {
+    if (peakBusy) return;
+    peakBusy = true;
+    while (peakQueue.length) {
+      const rec = peakQueue.shift();
+      if (rec.blob.size > 150 * 1048576) continue;
+      const buf = await decode(rec.blob).catch(() => null);
+      if (!buf) { if (rec.fromVideo) toast('"' + rec.name + '" seems to have no sound', 4000); continue; }
+      rec.peaks = bufferPeaks(buf);
+      const m = engine.media.get(rec.id); if (m) { m.buffer = buf; m.bufferP = Promise.resolve(buf); }
+      await Store.put('media', rec).catch(() => {});
+      if (st.project && st.project.audio.some((x) => x.mediaId === rec.id)) renderTimeline();
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    peakBusy = false;
+  }
+
+  /** Audio file -> sound in the library (kept as it is, no conversion). */
+  async function importSound(blob, source, name) {
+    const dur = await probeAudio(blob);
+    if (!dur) throw new Error('Cannot read the sound in ' + (name || blob.name || 'this file'));
+    const rec = await saveMedia({ id: M.uid('s'), name: name || (blob.name || 'Sound').replace(/\.[^.]+$/, ''), kind: 'audio', type: blob.type || 'audio/*', blob, duration: dur, peaks: null, source });
+    queuePeaks(rec);
+    return rec;
+  }
+
+  /** Video file -> a sound in the library. The video file itself is kept and only its sound is used,
+   *  so this is instant; "Save as WAV" converts when you ask for it. */
   async function extractSound(blob, source, name) {
-    const buf = await decode(blob).catch(() => null);
-    if (!buf) throw new Error((name || blob.name || 'This video') + ' has no sound this device can read.');
-    const wav = bufferToWav(buf);
-    return saveMedia({ id: M.uid('s'), name, kind: 'audio', type: 'audio/wav', blob: wav, duration: buf.duration, peaks: bufferPeaks(buf), source });
+    const dur = await probeAudio(blob);
+    if (!dur) throw new Error((name || blob.name || 'This video') + ' cannot be read on this device.');
+    const rec = await saveMedia({ id: M.uid('s'), name, kind: 'audio', type: blob.type || 'video/mp4', blob, duration: dur, peaks: null, source, fromVideo: true });
+    queuePeaks(rec);
+    return rec;
   }
 
   async function deleteMedia(m) {
@@ -525,7 +571,7 @@
     let n = 0;
     for (const f of files) {
       try {
-        toast('Taking the sound out of ' + f.name + '…', 20000);
+        toast('Adding the sound of ' + f.name + '…', 6000);
         const when = f.lastModified ? S.niceDate(new Date(f.lastModified).toISOString()) : '';
         const base = f.name.replace(/\.[^.]+$/, '');
         const name = fromTikTok ? 'TikTok sound' + (when ? ' · ' + when : '') + (/^[\w-]{1,24}$/.test(base) && !/^\d{6,}|^v\d/.test(base) ? ' · ' + base : '') : base;
@@ -839,11 +885,8 @@
       const m = f.list === 'video' && mediaById(f.item.mediaId);
       if (!m || f.item.kind !== 'video') { toast('Select a video clip'); return; }
       if ((f.item.speed || 1) !== 1) { toast('Set speed back to 1× to detach the sound'); return; }
-      engine.buffer(m.id).then((b) => {
-        if (!b) { toast('This clip has no sound'); return; }
-        let nid; edit(() => { nid = M.detachAudio(p, f.item.id, Object.assign({}, m, { name: m.name.replace(/\.[^.]+$/, '') + ' (sound)', duration: b.duration })); });
-        if (nid) select(nid);
-      });
+      let nid; edit(() => { nid = M.detachAudio(p, f.item.id, Object.assign({}, m, { name: m.name.replace(/\.[^.]+$/, '') + ' (sound)' })); });
+      if (nid) select(nid);
     }
   }
 

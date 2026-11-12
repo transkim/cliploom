@@ -1,6 +1,6 @@
 {
   "name": "cliploom",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cliploom: a simple video editor with a timeline, text, filters, transitions and a sound library fed by your own videos.",
   "main": "src/main.js",
   "license": "MIT",
