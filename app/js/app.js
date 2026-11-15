@@ -584,18 +584,19 @@
     } else {
       const back = T('back', '', () => select(null), 'back');
       if (f.list === 'video') {
-        const v = f.item.kind === 'video';
+        const v = f.item.kind === 'video', mt = muteTool(f.item);
         tools = [back, T('split', 'Split', () => act('split')), v ? T('speed', 'Speed', () => editAt('Speed')) : T('speed', 'Length', () => editAt('Length')),
-          v ? T('volume', 'Volume', () => editAt('Volume')) : null, T('filter', 'Filters', () => setTab('filters')), T('adjust', 'Adjust', () => editAt('Brightness')),
+          v ? T(mt.kind, mt.label, mt.run) : null, v ? T('volume', 'Volume', () => editAt('Volume')) : null, T('filter', 'Filters', () => setTab('filters')), T('adjust', 'Adjust', () => editAt('Brightness')),
           T('crop', 'Fit & zoom', () => editAt('Fit')), T('transition', 'Transition', () => editAt('Transition')), v ? T('detach', 'Extract audio', () => act('detach')) : null,
           T('overlay', 'To overlay', () => act('tooverlay')), T('copy', 'Copy', () => act('duplicate')), T('trash', 'Delete', () => act('delete'))].filter(Boolean);
       } else if (f.list === 'audio') {
-        tools = [back, T('split', 'Split', () => act('split')), T('volume', 'Volume', () => editAt('Volume')), T('fade', 'Fade', () => editAt('Fade in')),
+        const mt = muteTool(f.item);
+        tools = [back, T('split', 'Split', () => act('split')), T(mt.kind, mt.label, mt.run), T('volume', 'Volume', () => editAt('Volume')), T('fade', 'Fade', () => editAt('Fade in')),
           T('copy', 'Copy', () => act('duplicate')), T('trash', 'Delete', () => act('delete'))];
       } else if (f.list === 'pip') {
-        const v = f.item.kind === 'video';
+        const v = f.item.kind === 'video', mt = muteTool(f.item);
         tools = [back, T('split', 'Split', () => act('split')), T('crop', 'Size', () => editAt('Size')), T('overlay', 'Shape', () => editAt('Shape')),
-          T('fade', 'Opacity', () => editAt('Opacity')), T('effects', 'Blend', () => editAt('Blend')), v ? T('volume', 'Volume', () => editAt('Volume')) : null,
+          T('fade', 'Opacity', () => editAt('Opacity')), T('effects', 'Blend', () => editAt('Blend')), v ? T(mt.kind, mt.label, mt.run) : null, v ? T('volume', 'Volume', () => editAt('Volume')) : null,
           T('filter', 'Filter', () => editAt('Filter')), T('adjust', 'Adjust', () => editAt('Brightness')), T('media', 'To main track', () => act('tomain')),
           T('copy', 'Copy', () => act('duplicate')), T('trash', 'Delete', () => act('delete'))].filter(Boolean);
       } else if (f.list === 'effects') {
@@ -1726,6 +1727,15 @@
   function fld(label, control, value) {
     return h('div', { class: 'fld' }, h('label', null, h('span', null, label), value || ''), control);
   }
+  // one-tap mute that remembers the volume it had before
+  function setMuted(it, on) {
+    if (on) { if (it.volume > 0) it.prevVol = it.volume; it.volume = 0; } else it.volume = it.prevVol > 0 ? it.prevVol : 1;
+  }
+  function muteTool(it) {
+    const m = it.volume === 0;
+    return { kind: m ? 'mute' : 'volume', label: m ? 'Unmute' : 'Mute', run: () => { edit(() => setMuted(it, !m)); toast(m ? 'Sound on' : 'Sound muted'); } };
+  }
+  function muteChips(it) { return chips('Sound', [[false, 'On'], [true, 'Muted']], it.volume === 0, (v) => setMuted(it, v)); }
   function range(label, val, min, max, step, show, set) {
     const out = h('span', null, show(val));
     const r = h('input', { type: 'range', min, max, step, value: val });
@@ -1782,6 +1792,7 @@
       const next = p.video[f.index + 1];
       const tr = it.transition || { type: 'none', dur: 0.5 };
       body.append(head(it.kind === 'image' ? 'Photo' : 'Video clip', h('small', { class: 'muted' }, secs(M.clipDur(it)))), h('div', { class: 'insp-b' },
+        it.kind === 'video' ? muteChips(it) : null,
         it.kind === 'video' ? range('Volume', it.volume, 0, 2, 0.01, pct, (v) => { it.volume = v; }) : null,
         it.kind === 'video' ? chips('Speed', [[0.25, '0.25×'], [0.5, '0.5×'], [0.75, '0.75×'], [1, '1×'], [1.5, '1.5×'], [2, '2×'], [3, '3×'], [4, '4×']], it.speed, (v) => { it.speed = v; }) : null,
         it.kind === 'image' ? range('Length', it.out - it.in, 0.5, 20, 0.1, secs, (v) => { it.in = 0; it.out = Math.round(v * 10) / 10; }) : null,
@@ -1829,6 +1840,7 @@
         chips('Blend', [['normal', 'Normal'], ['screen', 'Screen'], ['multiply', 'Multiply'], ['overlay', 'Overlay'], ['lighten', 'Lighten'], ['darken', 'Darken']], it.blend || 'normal', (v) => { it.blend = v; }),
         chips('Rotate', [[0, '0°'], [-8, '−8°'], [8, '8°'], [90, '90°'], [180, '180°']], it.rotate || 0, (v) => { it.rotate = v; }),
         chips('Appear', [['none', 'Cut'], ['fade', 'Fade in'], ['pop', 'Pop in']], it.anim || 'none', (v) => { it.anim = v; }),
+        it.kind === 'video' ? muteChips(it) : null,
         it.kind === 'video' ? range('Volume', it.volume, 0, 2, 0.01, pct, (v) => { it.volume = v; }) : null,
         it.kind === 'video' ? chips('Speed', [[0.5, '0.5×'], [1, '1×'], [1.5, '1.5×'], [2, '2×']], it.speed || 1, (v) => { it.speed = v; }) : range('Length', it.out - it.in, 0.5, 30, 0.1, secs, (v) => { it.in = 0; it.out = Math.round(v * 10) / 10; }),
         range('Starts at', it.start, 0, Math.max(10, M.duration(p)), 0.1, secs, (v) => { it.start = v; }),
@@ -1851,6 +1863,7 @@
       const m = mediaById(it.mediaId);
       body.append(head('Sound', h('small', { class: 'muted' }, secs(M.soundDur(it)))), h('div', { class: 'insp-b' },
         h('p', { style: { margin: '0 0 6px', fontWeight: 600 } }, it.name),
+        muteChips(it),
         range('Volume', it.volume, 0, 2, 0.01, pct, (v) => { it.volume = v; }),
         range('Fade in', it.fadeIn || 0, 0, Math.min(10, M.soundDur(it) / 2), 0.1, secs, (v) => { it.fadeIn = v; }),
         range('Fade out', it.fadeOut || 0, 0, Math.min(10, M.soundDur(it) / 2), 0.1, secs, (v) => { it.fadeOut = v; }),
@@ -1969,7 +1982,7 @@
     const vt = h('div', { class: 'track video', 'data-track': 'video' });
     if (phone) {
       const muted = p.video.length > 0 && p.video.every((c) => c.kind !== 'video' || c.volume === 0);
-      const hv = head(muted ? 'mute' : 'volume', muted ? 'Unmute' : 'Mute clips', () => edit(() => { p.video.forEach((c) => { if (c.kind === 'video') c.volume = muted ? 1 : 0; }); toast(muted ? 'Clip sound on' : 'Clip sound off'); }), 'Mute or unmute the sound of all clips', muted);
+      const hv = head(muted ? 'mute' : 'volume', muted ? 'Unmute' : 'Mute clips', () => edit(() => { p.video.forEach((c) => { if (c.kind === 'video') setMuted(c, !muted); }); toast(muted ? 'Clip sound on' : 'Clip sound off'); }), 'Mute or unmute the sound of all clips', muted);
       hv.prepend(h('button', { class: 'hd-btn cover' + (p.cover != null ? ' on' : ''), title: 'Use the frame at the playhead as the project cover', onclick: (e) => { e.stopPropagation(); setCover(); }, html: (p.thumb ? '<img src="' + p.thumb + '" alt="">' : Icons.svg('cover', 22)) + '<span>Cover</span>' }));
       vt.append(hv);
     }
@@ -2006,7 +2019,7 @@
         if (phone && l === 0) ot.append(head('overlay', null, () => setTab('overlay'), 'Overlay'));
         for (const it of p.pip) if ((it.lane || 0) === l) {
           const m = mediaById(it.mediaId);
-          const el = mk('o', it, X(it.start), M.clipDur(it) * pps - 2, (m ? m.name : 'Missing'));
+          const el = mk('o', it, X(it.start), M.clipDur(it) * pps - 2, (it.kind === 'video' && it.volume === 0 ? '🔇 ' : '') + (m ? m.name : 'Missing'));
           if (m && m.thumb) el.style.backgroundImage = 'url(' + m.thumb + ')';
           ot.append(el);
         }
