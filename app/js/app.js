@@ -425,6 +425,7 @@
     await engine.seekTo(0);
   }
   async function closeProject() {
+    closeTransitions();
     engine.pause();
     await saveNow();
     st.project = null;
@@ -543,6 +544,173 @@
       if (f) f.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }, 60);
   }
+  // ---------------- transitions sheet ----------------
+  const BASIC_TR = [['fade', 'Fade'], ['black', 'Dip to black'], ['white', 'Flash white'], ['slide', 'Slide'], ['push', 'Push'], ['up', 'Slide up'], ['wipe', 'Wipe'], ['circle', 'Circle'], ['zoom', 'Zoom'], ['blur', 'Blur']];
+  const POPULAR_TR = ['CrossZoom', 'Swirl', 'WhipPan', 'GlitchMemories', 'Dreamy', 'CircleOpen', 'Cube', 'InvertedPageCurl', 'Doorway', 'FilmBurn', 'Pixelize', 'Ripple',
+    'WindowSlices', 'ZoomInCircles', 'DreamyZoom', 'LightningFlash', 'Mosaic', 'Kaleidoscope', 'BookFlip', 'HeartWipe', 'WaterDrop', 'TvTurnOff', 'Shatter', 'LensFlare',
+    'Morph', 'DirectionalWarp', 'Bounce', 'SimpleZoom', 'LightStreaks', 'Shockwave', 'Tumble', 'StarWipe'];
+  const TR_GROUPS = [
+    ['popular', 'Popular'], ['basic', 'Basic'],
+    ['slide', 'Slide', ['slide', 'push', 'directional', 'swipe', 'motion']],
+    ['wipe', 'Wipe', ['wipe', 'reveal', 'iris', 'clock', 'blinds']],
+    ['zoom', 'Zoom & blur', ['zoom', 'blur', 'motion-blur', 'lens', 'focus']],
+    ['3d', '3D & flip', ['3d', 'flip', 'fold', 'cube', 'perspective', 'page', 'paper', 'card', 'roll']],
+    ['glitch', 'Glitch & retro', ['glitch', 'retro', 'static', 'scanlines', 'digital', 'datamosh', 'pixelate', 'pixel']],
+    ['light', 'Light & flash', ['light', 'flash', 'glow', 'burn', 'flare', 'bloom', 'light-leak', 'rays', 'sparkle']],
+    ['shape', 'Shapes', ['shape', 'circle', 'heart', 'star', 'grid', 'tiles', 'squares', 'blocks', 'hexagon', 'dots', 'pattern']],
+    ['dissolve', 'Dissolve', ['dissolve', 'blend', 'fade', 'noise', 'smoke', 'dust', 'particles']],
+    ['distort', 'Warp & water', ['distort', 'wave', 'water', 'ripple', 'warp', 'liquid', 'swirl', 'refraction', 'glass']],
+    ['all', 'All'],
+  ];
+  const glList = () => (typeof GLTrans !== 'undefined' && GLTrans.available() ? GLTrans.LIST : []);
+  function trName(type) {
+    if (!type || type === 'none') return 'None';
+    if (type.startsWith('gl:')) return GLTrans.pretty(type.slice(3));
+    const b = BASIC_TR.find((x) => x[0] === type);
+    return b ? b[1] : type;
+  }
+  function trItems(group, q) {
+    const gl = glList();
+    const basic = BASIC_TR.map(([type, name]) => ({ type, name, tags: [] }));
+    const glItems = gl.map((t) => ({ type: 'gl:' + t.name, name: GLTrans.pretty(t.name), tags: t.tags }));
+    if (q) { q = q.toLowerCase(); return basic.concat(glItems).filter((x) => x.name.toLowerCase().includes(q) || x.tags.some((g) => g.includes(q))); }
+    if (group === 'basic' || !gl.length) return basic;
+    if (group === 'popular') return POPULAR_TR.filter((n) => GLTrans.has(n)).map((n) => glItems.find((x) => x.type === 'gl:' + n)).concat(basic.slice(0, 4));
+    if (group === 'all') return basic.concat(glItems);
+    const g = TR_GROUPS.find((x) => x[0] === group);
+    return glItems.filter((x) => x.tags.some((t) => g[2].includes(t)));
+  }
+  // two sample frames for the tiles: the clips at the cut, or drawn scenes when there are no thumbnails
+  function sampleScene(w, h, which) {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    const gr = g.createLinearGradient(0, 0, 0, h);
+    if (which === 0) { gr.addColorStop(0, '#ff9a5a'); gr.addColorStop(0.6, '#ff4f7b'); gr.addColorStop(1, '#3b1d5a'); } else { gr.addColorStop(0, '#7fd3ff'); gr.addColorStop(0.55, '#3d8bff'); gr.addColorStop(1, '#0d3b2e'); }
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    g.fillStyle = which === 0 ? '#ffe28a' : '#ffffff';
+    g.beginPath(); g.arc(w * (which ? 0.7 : 0.5), h * 0.42, w * (which ? 0.12 : 0.2), 0, 7); g.fill();
+    g.fillStyle = which === 0 ? '#2a1438' : '#11583f';
+    g.beginPath(); g.moveTo(0, h); g.lineTo(0, h * 0.72); g.quadraticCurveTo(w * 0.3, h * (which ? 0.6 : 0.66), w * 0.55, h * 0.74); g.quadraticCurveTo(w * 0.8, h * 0.8, w, h * 0.68); g.lineTo(w, h); g.fill();
+    return c;
+  }
+  function loadImg(src) { return new Promise((r) => { if (!src) return r(null); const im = new Image(); im.onload = () => r(im); im.onerror = () => r(null); im.src = src; }); }
+  function coverInto(img, w, h) {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const s = Math.max(w / img.width, h / img.height);
+    c.getContext('2d').drawImage(img, (w - img.width * s) / 2, (h - img.height * s) / 2, img.width * s, img.height * s);
+    return c;
+  }
+  const trUI = { raf: 0, visible: new Set(), A: null, B: null, stopT: 0 };
+  function closeTransitions() {
+    const el = $('#trPanel');
+    if (el) el.remove();
+    cancelAnimationFrame(trUI.raf); trUI.raf = 0; trUI.visible.clear();
+    if (trUI.io) { trUI.io.disconnect(); trUI.io = null; }
+    document.body.classList.remove('tr-open');
+  }
+  /** Open the transitions sheet from the clip under the playhead (main toolbar). */
+  function transitionsAtPlayhead() {
+    const p = st.project, at = M.videoAt(p, engine.time)[0];
+    if (!at || p.video.length < 2) { toast('Add two clips first. Transitions go between clips.'); return; }
+    const L = M.layout(p), r = L[at.index];
+    const i = at.index === p.video.length - 1 || (at.index > 0 && engine.time - r.start < r.end - engine.time) ? at.index - 1 : at.index;
+    openTransitions(p.video[i].id);
+  }
+  async function playJoin(i) {
+    const p = st.project, L = M.layout(p);
+    if (!L[i]) return;
+    const d = M.transDur(p, i) || 0.5;
+    clearTimeout(trUI.stopT);
+    if (engine.playing) { engine.pause(); setPlayIcon(); }
+    await engine.seekTo(Math.max(0, L[i].end - d / 2 - 0.5));
+    await togglePlay();
+    trUI.stopT = setTimeout(() => { if (engine.playing) togglePlay(); }, (d + 1) * 1000);
+  }
+  async function openTransitions(clipId) {
+    const p = st.project;
+    const i = p.video.findIndex((c) => c.id === clipId);
+    if (i < 0) return;
+    if (i >= p.video.length - 1) { toast('Transitions go between two clips. Add another clip after this one.'); return; }
+    closeTransitions(); closeSheets();
+    if (st.sel !== clipId) select(clipId);
+    const clip = () => st.project.video.find((c) => c.id === clipId);
+    const TW = 132, TH = 164;
+    const [ia, ib] = await Promise.all([loadImg((mediaById(p.video[i].mediaId) || {}).thumb), loadImg(p.video[i + 1].mediaId !== p.video[i].mediaId ? (mediaById(p.video[i + 1].mediaId) || {}).thumb : null)]);
+    trUI.A = ia ? coverInto(ia, TW, TH) : sampleScene(TW, TH, 0);
+    trUI.B = ib ? coverInto(ib, TW, TH) : sampleScene(TW, TH, 1);
+    let group = 'popular', q = '';
+    const cur = () => (clip() && clip().transition) || { type: 'none', dur: 0.5 };
+    const grid = h('div', { class: 'tr-grid' });
+    const tabs = h('div', { class: 'tr-tabs' });
+    const search = h('input', { class: 'tr-search', type: 'search', placeholder: 'Search transitions', oninput: () => { q = search.value.trim(); fill(); } });
+    const allBox = h('button', { class: 'tr-all' + (st.trAll ? ' on' : ''), onclick: () => { st.trAll = !st.trAll; allBox.classList.toggle('on', st.trAll); if (st.trAll) apply(cur().type); } }, h('span', { class: 'dot' }), 'Apply to all');
+    const durOut = h('span', { class: 'tr-durv' });
+    const dur = h('input', { type: 'range', min: 0.2, max: 2, step: 0.05, value: cur().dur || 0.5 });
+    const showDur = () => { durOut.textContent = (+dur.value).toFixed(1) + 's'; dur.disabled = cur().type === 'none'; };
+    dur.oninput = () => { edit(() => { for (const c of targets()) if (c.transition && c.transition.type !== 'none') c.transition.dur = +dur.value; }, true); showDur(); };
+    dur.onchange = () => { renderTimeline(); playJoin(st.project.video.findIndex((c) => c.id === clipId)); };
+    const targets = () => (st.trAll ? st.project.video.slice(0, -1) : [clip()].filter(Boolean));
+    function apply(type) {
+      edit(() => { for (const c of targets()) c.transition = { type, dur: +dur.value || 0.5 }; });
+      $$('.tr-tile', grid).forEach((t) => t.classList.toggle('on', t.dataset.type === type));
+      showDur();
+      if (type !== 'none') playJoin(st.project.video.findIndex((c) => c.id === clipId));
+    }
+    function drawTile(tile, pr) {
+      const g = tile._cv.getContext('2d');
+      g.save(); g.clearRect(0, 0, TW, TH);
+      engine.mix(g, trUI.A, trUI.B, pr, tile.dataset.type, TW, TH);
+      g.restore();
+    }
+    function fill() {
+      if (trUI.io) trUI.io.disconnect();
+      trUI.visible.clear();
+      grid.innerHTML = '';
+      grid.scrollTop = 0;
+      const items = trItems(group, q);
+      const now = cur().type;
+      if (!q) grid.append(h('button', { class: 'tr-tile none' + (now === 'none' ? ' on' : ''), 'data-type': 'none', onclick: () => apply('none') }, h('div', { class: 'tr-thumb', html: Icons.svg('none', 30) }), h('span', null, 'None')));
+      if (!items.length) grid.append(h('p', { class: 'muted tr-empty' }, 'No transitions match “' + q + '”.'));
+      trUI.io = new IntersectionObserver((ents) => { for (const e of ents) { if (e.isIntersecting) { trUI.visible.add(e.target); if (!e.target._drawn) { drawTile(e.target, 0.5); e.target._drawn = true; } } else trUI.visible.delete(e.target); } }, { root: grid, rootMargin: '80px' });
+      for (const it of items) {
+        const cv = h('canvas', { width: TW, height: TH });
+        const tile = h('button', { class: 'tr-tile' + (now === it.type ? ' on' : ''), 'data-type': it.type, title: it.name, onclick: () => apply(it.type) }, h('div', { class: 'tr-thumb' }, cv), h('span', null, it.name));
+        tile._cv = cv;
+        grid.append(tile);
+        trUI.io.observe(tile);
+      }
+      $$('button', tabs).forEach((b) => b.classList.toggle('on', !q && b.dataset.g === group));
+    }
+    for (const [id, label] of TR_GROUPS) {
+      if (id !== 'basic' && id !== 'popular' && id !== 'all' && !glList().length) continue;
+      tabs.append(h('button', { 'data-g': id, onclick: () => { group = id; q = ''; search.value = ''; fill(); } }, label));
+    }
+    const panel = h('div', { class: 'tr-panel', id: 'trPanel' },
+      h('div', { class: 'sheet-grip tr-grip', onclick: closeTransitions }),
+      h('div', { class: 'tr-head' },
+        h('button', { class: 'tr-ico', title: 'Search', html: Icons.svg('search', 22), onclick: () => { panel.classList.toggle('searching'); if (panel.classList.contains('searching')) search.focus(); else { q = ''; search.value = ''; fill(); } } }),
+        search, tabs,
+        h('button', { class: 'tr-ico ok', title: 'Done', html: Icons.svg('check', 24), onclick: closeTransitions })),
+      h('div', { class: 'tr-opts' }, allBox, h('label', { class: 'tr-dur' }, 'Length', dur, durOut)),
+      grid);
+    document.body.append(panel);
+    document.body.classList.add('tr-open');
+    showDur();
+    fill();
+    // animate the tiles that are on screen
+    let last = 0; const t0 = performance.now();
+    const loop = (ts) => {
+      if (!document.getElementById('trPanel')) return;
+      trUI.raf = requestAnimationFrame(loop);
+      if (ts - last < 40) return;
+      last = ts;
+      const ph = ((ts - t0) % 1900) / 1900;
+      const pr = Math.min(1, Math.max(0, (ph - 0.12) / 0.7));
+      for (const tile of trUI.visible) if (tile.isConnected && tile.dataset.type !== 'none') drawTile(tile, pr);
+    };
+    trUI.raf = requestAnimationFrame(loop);
+  }
+
   function placeAddBtn() {
     const ab = $('#addClipBtn'), v2 = $('.track.video');
     if (ab) ab.style.display = st.project && st.project.video.length ? '' : 'none';
@@ -575,7 +743,7 @@
     } else if (!f) {
       st.navSub = null;
       tools = [
-        T('edit', 'Edit', () => selectAtPlayhead()), T('audio', 'Audio', sub('audio')), T('text', 'Text', sub('text')), T('effects', 'Effects', () => setTab('effects')),
+        T('edit', 'Edit', () => selectAtPlayhead()), T('transition', 'Transitions', transitionsAtPlayhead), T('audio', 'Audio', sub('audio')), T('text', 'Text', sub('text')), T('effects', 'Effects', () => setTab('effects')),
         T('overlay', 'Overlay', () => setTab('overlay')), T('captions', 'Captions', () => setTab('captions')), T('filter', 'Filters', () => setTab('filters')),
         T('adjust', 'Adjust', () => selectAtPlayhead(() => editAt('Brightness'))), T('sticker', 'Stickers', () => setTab('stickers')),
         T('ai', 'Generate media', sub('generate'), 'gen', true), T('avatar', 'AI avatar', () => avatarDialog(), '', true),
@@ -587,7 +755,7 @@
         const v = f.item.kind === 'video', mt = muteTool(f.item);
         tools = [back, T('split', 'Split', () => act('split')), v ? T('speed', 'Speed', () => editAt('Speed')) : T('speed', 'Length', () => editAt('Length')),
           v ? T(mt.kind, mt.label, mt.run) : null, v ? T('volume', 'Volume', () => editAt('Volume')) : null, T('filter', 'Filters', () => setTab('filters')), T('adjust', 'Adjust', () => editAt('Brightness')),
-          T('crop', 'Fit & zoom', () => editAt('Fit')), T('transition', 'Transition', () => editAt('Transition')), v ? T('detach', 'Extract audio', () => act('detach')) : null,
+          T('crop', 'Fit & zoom', () => editAt('Fit')), T('transition', 'Transition', () => openTransitions(f.item.id)), v ? T('detach', 'Extract audio', () => act('detach')) : null,
           T('overlay', 'To overlay', () => act('tooverlay')), T('copy', 'Copy', () => act('duplicate')), T('trash', 'Delete', () => act('delete'))].filter(Boolean);
       } else if (f.list === 'audio') {
         const mt = muteTool(f.item);
@@ -1807,7 +1975,7 @@
         range('Contrast', it.adjust.c, -100, 100, 1, String, (v) => { it.adjust.c = v; }),
         range('Saturation', it.adjust.s, -100, 100, 1, String, (v) => { it.adjust.s = v; }),
         range('Warmth', it.adjust.w, -100, 100, 1, String, (v) => { it.adjust.w = v; }),
-        next ? chips('Transition to the next clip', [['none', 'None'], ['fade', 'Fade'], ['black', 'Dip black'], ['white', 'Flash'], ['slide', 'Slide'], ['push', 'Push'], ['up', 'Up'], ['wipe', 'Wipe'], ['circle', 'Circle'], ['zoom', 'Zoom'], ['blur', 'Blur']], tr.type, (v) => { it.transition = { type: v, dur: tr.dur || 0.5 }; }) : null,
+        next ? fld('Transition to the next clip', h('button', { class: 'btn sm tr-pick', onclick: () => openTransitions(it.id), html: Icons.svg('transition', 16) + ' ' + trName(tr.type) + ' ›' })) : null,
         next && tr.type !== 'none' ? range('Transition length', tr.dur, 0.2, 2, 0.05, secs, (v) => { it.transition = { type: tr.type, dur: v }; }) : null,
         h('p', { class: 'muted', style: { fontSize: '11.5px' } }, m ? m.name : 'Missing file'),
         actions));
@@ -2006,7 +2174,7 @@
       } else if (m && m.thumb) el.style.backgroundImage = 'url(' + m.thumb + ')';
       if (r.index < p.video.length - 1) {
         const tt = c.transition && c.transition.type !== 'none';
-        el.append(h('button', { class: 'tr', title: 'Transition', onclick: (e) => { e.stopPropagation(); select(c.id, true); setTimeout(() => { const ins = $('#insp'); ins.scrollTop = ins.scrollHeight; }, 30); } }, tt ? '⋈' : '+'));
+        el.append(h('button', { class: 'tr' + (tt ? ' set' : ''), title: tt ? 'Transition: ' + trName(c.transition.type) : 'Add a transition', onpointerdown: (e) => e.stopPropagation(), onclick: (e) => { e.stopPropagation(); openTransitions(c.id); }, html: tt ? Icons.svg('transition', 12) : '<b></b>' }));
       }
       vt.append(el);
     }
@@ -2457,10 +2625,11 @@
     if (k === ' ') { e.preventDefault(); togglePlay(); } else if (k === 's' && !e.ctrlKey) act('split');
     else if (k === 'delete' || k === 'backspace') act('delete');
     else if (k === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); undo(e.shiftKey); } else if (k === 'y' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); undo(true); }
-    else if (k === 'arrowleft' || k === 'arrowright') { e.preventDefault(); const d = (e.shiftKey ? 1 : 1 / (st.project.fps || 30)) * (k === 'arrowleft' ? -1 : 1); engine.seekTo(Math.max(0, Math.min(M.duration(st.project), engine.time + d))); } else if (k === 'escape') { select(null); }
+    else if (k === 'arrowleft' || k === 'arrowright') { e.preventDefault(); const d = (e.shiftKey ? 1 : 1 / (st.project.fps || 30)) * (k === 'arrowleft' ? -1 : 1); engine.seekTo(Math.max(0, Math.min(M.duration(st.project), engine.time + d))); } else if (k === 'escape') { if ($('#trPanel')) closeTransitions(); else select(null); }
   });
   Platform.onBack(() => {
     if (st.modalClose) return st.modalClose();
+    if ($('#trPanel')) return closeTransitions();
     if (document.body.classList.contains('pv-full')) { document.body.classList.remove('pv-full'); fitCanvas(); return; }
     if (st.sheet) return closeSheets();
     if (st.sel) return select(null);

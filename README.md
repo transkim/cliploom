@@ -5,7 +5,7 @@ A simple video editor for Windows and Android: put clips on a timeline, cut and 
 ## What it does
 
 - **Timeline**: main video track (videos and photos), text/sticker track, several sound lanes. Drag to move or reorder, drag the white handles to trim, split at the playhead, copy, delete, undo/redo, zoom.
-- **Clips**: volume, speed 0.25×–4×, fit/fill, zoom, move, rotate, mirror, 14 filters, brightness/contrast/saturation/warmth, photo slow zoom, 10 transitions (fade, dip to black, flash, slide, push, up, wipe, circle, zoom, blur).
+- **Clips**: volume, speed 0.25×–4×, fit/fill, zoom, move, rotate, mirror, 14 filters, brightness/contrast/saturation/warmth, photo slow zoom, 235 transitions. Tap the white box between two clips (or **Transitions** in the toolbar) to open the transitions sheet: animated previews made from your own clips, categories (Popular, Basic, Slide, Wipe, Zoom & blur, 3D & flip, Glitch & retro, Light & flash, Shapes, Dissolve, Warp & water), search, length and Apply to all. 10 basic ones are drawn by Cliploom; the other 225 are the open-source [GL Transitions](https://github.com/gl-transitions/gl-transitions) shaders (MIT, authors listed in `app/vendor/gl-transitions.LICENSE`), run on the GPU. Regenerate them with `tools/build-transitions.js`.
 - **Text and stickers**: 13 styles, 7 bundled fonts (OFL), outline, background box, shadow/glow, 6 animations; drag them on the preview.
 - **Shapes**: 9:16, 16:9, 1:1, 4:5, 3:4, 21:9 (Aspect ratio) with a blurred, coloured or picture background (Background).
 - **Overlay**: videos and photos on top of the main video (picture in picture) on their own rows: size, place, rectangle/rounded/circle, border, opacity, blend modes, fade/pop in, filters.

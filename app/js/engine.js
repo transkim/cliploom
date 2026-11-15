@@ -411,6 +411,41 @@
       if (hit) hit.push({ id: o.id, x: (cx - bw / 2 * scale) / W, y: (cy - bh / 2 * scale) / H, w: bw * scale / W, h: bh * scale / H });
     }
 
+    /** Mix two same-size canvases for a transition at progress pr (0..1). */
+    mix(ctx, A, B, pr, type, W, H) {
+      const glc = type && type.startsWith('gl:') && typeof GLTrans !== 'undefined' ? GLTrans.render(type.slice(3), A, B, pr, W, H) : null;
+      if (glc) ctx.drawImage(glc, 0, 0, W, H);
+      else if (type === 'black' || type === 'white') {
+        ctx.drawImage(pr < 0.5 ? A : B, 0, 0);
+        ctx.globalAlpha = pr < 0.5 ? pr * 2 : (1 - pr) * 2;
+        ctx.fillStyle = type === 'white' ? '#fff' : '#000';
+        ctx.fillRect(0, 0, W, H);
+      } else if (type === 'slide' || type === 'push') {
+        const e = pr * pr * (3 - 2 * pr);
+        ctx.drawImage(A, type === 'push' ? -e * W : 0, 0);
+        ctx.drawImage(B, (1 - e) * W, 0);
+      } else if (type === 'up') {
+        const e = pr * pr * (3 - 2 * pr);
+        ctx.drawImage(A, 0, -e * H); ctx.drawImage(B, 0, (1 - e) * H);
+      } else if (type === 'wipe') {
+        ctx.drawImage(A, 0, 0);
+        ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W * pr, H); ctx.clip(); ctx.drawImage(B, 0, 0); ctx.restore();
+      } else if (type === 'circle') {
+        ctx.drawImage(A, 0, 0);
+        ctx.save(); ctx.beginPath(); ctx.arc(W / 2, H / 2, Math.hypot(W, H) / 2 * pr, 0, Math.PI * 2); ctx.clip(); ctx.drawImage(B, 0, 0); ctx.restore();
+      } else if (type === 'zoom') {
+        const s = 1 + pr * 0.6;
+        ctx.save(); ctx.globalAlpha = 1 - pr; ctx.translate(W / 2, H / 2); ctx.scale(s, s); ctx.drawImage(A, -W / 2, -H / 2); ctx.restore();
+        ctx.globalAlpha = pr; ctx.drawImage(B, 0, 0);
+      } else if (type === 'blur') {
+        ctx.filter = 'blur(' + Math.round(Math.sin(pr * Math.PI) * W / 40) + 'px)';
+        ctx.drawImage(A, 0, 0); ctx.globalAlpha = pr; ctx.drawImage(B, 0, 0); ctx.filter = 'none';
+      } else {
+        ctx.drawImage(A, 0, 0); ctx.globalAlpha = pr; ctx.drawImage(B, 0, 0);
+      }
+      ctx.globalAlpha = 1;
+    }
+
     /** Draw time t onto target (default: the preview canvas). exact = wait for seeks. */
     async drawAt(t, exact, target) {
       const p = this.project;
@@ -430,34 +465,7 @@
         this.drawClip(B.getContext('2d'), srcs[1], entries[1].clip, W, H, entries[1].local);
         const pr = Math.max(0, Math.min(1, entries[1].progress));
         const type = entries[1].type;
-        if (type === 'black' || type === 'white') {
-          ctx.drawImage(pr < 0.5 ? A : B, 0, 0);
-          ctx.globalAlpha = pr < 0.5 ? pr * 2 : (1 - pr) * 2;
-          ctx.fillStyle = type === 'white' ? '#fff' : '#000';
-          ctx.fillRect(0, 0, W, H);
-        } else if (type === 'slide' || type === 'push') {
-          const e = pr * pr * (3 - 2 * pr);
-          ctx.drawImage(A, type === 'push' ? -e * W : 0, 0);
-          ctx.drawImage(B, (1 - e) * W, 0);
-        } else if (type === 'up') {
-          const e = pr * pr * (3 - 2 * pr);
-          ctx.drawImage(A, 0, -e * H); ctx.drawImage(B, 0, (1 - e) * H);
-        } else if (type === 'wipe') {
-          ctx.drawImage(A, 0, 0);
-          ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W * pr, H); ctx.clip(); ctx.drawImage(B, 0, 0); ctx.restore();
-        } else if (type === 'circle') {
-          ctx.drawImage(A, 0, 0);
-          ctx.save(); ctx.beginPath(); ctx.arc(W / 2, H / 2, Math.hypot(W, H) / 2 * pr, 0, Math.PI * 2); ctx.clip(); ctx.drawImage(B, 0, 0); ctx.restore();
-        } else if (type === 'zoom') {
-          const s = 1 + pr * 0.6;
-          ctx.save(); ctx.globalAlpha = 1 - pr; ctx.translate(W / 2, H / 2); ctx.scale(s, s); ctx.drawImage(A, -W / 2, -H / 2); ctx.restore();
-          ctx.globalAlpha = pr; ctx.drawImage(B, 0, 0);
-        } else if (type === 'blur') {
-          ctx.filter = 'blur(' + Math.round(Math.sin(pr * Math.PI) * W / 40) + 'px)';
-          ctx.drawImage(A, 0, 0); ctx.globalAlpha = pr; ctx.drawImage(B, 0, 0); ctx.filter = 'none';
-        } else {
-          ctx.drawImage(A, 0, 0); ctx.globalAlpha = pr; ctx.drawImage(B, 0, 0);
-        }
+        this.mix(ctx, A, B, pr, type, W, H);
         ctx.globalAlpha = 1;
       }
       ctx.restore();
