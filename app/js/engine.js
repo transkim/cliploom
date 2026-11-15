@@ -575,9 +575,15 @@
       this.playing = true;
       this.started = new Set();
       this.unlock();
-      let t = this.time, last = performance.now(), held = 0, drawing = false;
+      let t = this.time, last = 0, held = 0, drawing = false;
       for (const s of this.project.audio) { const m = this.media.get(s.mediaId); if (m && m.kind === 'audio') this.buffer(s.mediaId); }
+      // After a few idle minutes a phone puts the sound output and the paused videos to sleep.
+      // Wake both up first and start the clock only when the picture really moves, instead of
+      // starting at once and stuttering while they come back.
+      await this.wake(t);
+      if (!this.playing) return;
       this.playSounds(t);
+      last = performance.now();
       const tick = () => {
         if (!this.playing) return;
         const now = performance.now();
@@ -595,6 +601,7 @@
           } else {
             // still loading/seeking: hold the clock, but never for ever
             held += wall;
+            if (held > 0.15 && this.soundsAt && held <= 2) this.stopSounds(); // hold the sound with the picture
             if (held > 0.8 && v.paused && !v.seeking) this.start(v);
             if (held > 2) t += wall; // a video that won't start must not freeze the whole preview
             if (held > 4 && !v.seeking && v.readyState >= 1) { v.currentTime = main.e.time; held = 2; }
@@ -603,7 +610,9 @@
         if (t >= dur) { this.pause(); this.time = dur; this.drawAt(dur - 0.01, true); if (this.onEnd) this.onEnd(); return; }
         this.time = t;
         // keep the Web Audio sounds on the picture's clock
-        if (this.soundsAt) {
+        if (!this.soundsAt && this.soundsWait && (held === 0 || held > 2)) this.playSounds(t);
+        if (this.actx.state !== 'running' && now - (this.resumedAt || 0) > 1000) { this.resumedAt = now; this.actx.resume().catch(() => {}); this.soundsDirty = true; }
+        if (this.soundsAt && this.actx.state === 'running') {
           const heard = this.soundsAt.t + (this.actx.currentTime - this.soundsAt.ctx);
           if (this.soundsDirty || (Math.abs(heard - t) > 0.3 && now - this.soundsAt.made > 800)) this.playSounds(t);
         }
@@ -712,10 +721,27 @@
       return main;
     }
 
+    stopSounds() {
+      for (const n of this.nodes || []) { try { n.stop(); } catch (_) { /* done */ } }
+      this.nodes = [];
+      this.soundsAt = null;
+      this.soundsWait = true;
+    }
+
+    /** Resume the sound output and get the video under the playhead decoding again (max ~1.5 s). */
+    async wake(t) {
+      const until = (ms, test) => new Promise((r) => { const t0 = performance.now(); const go = () => (test() || performance.now() - t0 > ms ? r() : setTimeout(go, 30)); go(); });
+      const ctx = this.actx;
+      if (ctx.state !== 'running') { ctx.resume().catch(() => {}); await until(800, () => ctx.state === 'running' || !this.playing); }
+      const main = this.syncMedia(t);
+      if (main) await until(1500, () => !this.playing || (!main.v.paused && !main.v.seeking && main.v.readyState >= 3));
+    }
+
     /** (Re)start every decoded sound from time t through Web Audio. */
     playSounds(t) {
       for (const n of this.nodes || []) { try { n.stop(); } catch (_) { /* done */ } }
       this.soundsDirty = false;
+      this.soundsWait = false;
       const ctx = this.actx;
       const at = ctx.currentTime + 0.03;
       this.nodes = this.scheduleAudio(ctx, ctx.destination, t, at, (s) => s.sound && this.media.get(s.mediaId) && this.media.get(s.mediaId).buffer);
@@ -724,6 +750,7 @@
 
     pause() {
       this.soundsAt = null;
+      this.soundsWait = false;
       this.playing = false;
       cancelAnimationFrame(this.raf);
       for (const n of this.nodes || []) { try { n.stop(); } catch (_) { /* done */ } }
