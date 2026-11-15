@@ -39,6 +39,7 @@ jobs:
         with:
           name: Cliploom-Windows-installer
           path: dist/*.exe
+          retention-days: 3
 
   android:
     needs: test
@@ -78,3 +79,4 @@ jobs:
         with:
           name: Cliploom-Android-apk
           path: mobile/Cliploom-debug.apk
+          retention-days: 3
