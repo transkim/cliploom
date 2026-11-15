@@ -500,9 +500,10 @@
     }
 
     // ---------- playback ----------
-    scheduleAudio(ctx, dest, from, startAt) {
+    scheduleAudio(ctx, dest, from, startAt, only) {
       const nodes = [];
       for (const s of M.audioSchedule(this.project)) {
+        if (only && !only(s)) continue;
         const m = this.media.get(s.mediaId);
         const buf = m && m.buffer;
         if (!buf) continue;
@@ -575,6 +576,8 @@
       this.started = new Set();
       this.unlock();
       let t = this.time, last = performance.now(), held = 0, drawing = false;
+      for (const s of this.project.audio) { const m = this.media.get(s.mediaId); if (m && m.kind === 'audio') this.buffer(s.mediaId); }
+      this.playSounds(t);
       const tick = () => {
         if (!this.playing) return;
         const now = performance.now();
@@ -599,6 +602,11 @@
         } else { t += wall; held = 0; }
         if (t >= dur) { this.pause(); this.time = dur; this.drawAt(dur - 0.01, true); if (this.onEnd) this.onEnd(); return; }
         this.time = t;
+        // keep the Web Audio sounds on the picture's clock
+        if (this.soundsAt) {
+          const heard = this.soundsAt.t + (this.actx.currentTime - this.soundsAt.ctx);
+          if (this.soundsDirty || (Math.abs(heard - t) > 0.3 && now - this.soundsAt.made > 800)) this.playSounds(t);
+        }
         if (!drawing) { drawing = true; this.drawAt(t, false).catch(() => {}).then(() => { drawing = false; }); }
         if (this.onTime) this.onTime(t);
         this.raf = requestAnimationFrame(tick);
@@ -683,11 +691,17 @@
       for (const s of p.audio) {
         const d = M.soundDur(s);
         if (t < s.start || t >= s.start + d || !(s.volume > 0)) continue;
+        // Decoded sounds play through Web Audio (see playSounds): a second <audio> element next to the
+        // video makes Android pass the sound back and forth between them, and both stall.
+        const m = this.media.get(s.mediaId);
+        if (m && m.buffer) continue;
+        if (m && m.kind === 'audio') this.buffer(s.mediaId).then((b) => { if (b && this.playing) this.soundsDirty = true; });
         const a = this.sound(s);
         if (!a) continue;
         on.add(s.id);
         const want = s.in + (t - s.start);
-        if (a.paused || Math.abs(a.currentTime - want) > 0.3) { if (!a.seeking) a.currentTime = want; }
+        const now = performance.now();
+        if (!a.seeking && (!a._last || now - a._last > 1500) && (a.paused ? Math.abs(a.currentTime - want) > 0.3 : Math.abs(a.currentTime - want) > 0.6)) { a.currentTime = want; a._last = now; }
         let g = s.volume;
         if (s.fadeIn > 0 && t - s.start < s.fadeIn) g *= (t - s.start) / s.fadeIn;
         if (s.fadeOut > 0 && s.start + d - t < s.fadeOut) g *= (s.start + d - t) / s.fadeOut;
@@ -698,7 +712,18 @@
       return main;
     }
 
+    /** (Re)start every decoded sound from time t through Web Audio. */
+    playSounds(t) {
+      for (const n of this.nodes || []) { try { n.stop(); } catch (_) { /* done */ } }
+      this.soundsDirty = false;
+      const ctx = this.actx;
+      const at = ctx.currentTime + 0.03;
+      this.nodes = this.scheduleAudio(ctx, ctx.destination, t, at, (s) => s.sound && this.media.get(s.mediaId) && this.media.get(s.mediaId).buffer);
+      this.soundsAt = { t, ctx: at, made: performance.now() };
+    }
+
     pause() {
+      this.soundsAt = null;
       this.playing = false;
       cancelAnimationFrame(this.raf);
       for (const n of this.nodes || []) { try { n.stop(); } catch (_) { /* done */ } }

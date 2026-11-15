@@ -296,7 +296,7 @@
     }
     for (const s of p.audio) {
       if (!(s.volume > 0)) continue;
-      out.push({ mediaId: s.mediaId, when: s.start, offset: s.in, dur: soundDur(s), rate: 1, volume: s.volume, fadeIn: s.fadeIn || 0, fadeOut: s.fadeOut || 0 });
+      out.push({ mediaId: s.mediaId, when: s.start, offset: s.in, dur: soundDur(s), rate: 1, volume: s.volume, fadeIn: s.fadeIn || 0, fadeOut: s.fadeOut || 0, sound: s.id });
     }
     return out;
   }
