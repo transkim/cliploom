@@ -66,6 +66,7 @@
     constructor(canvas) {
       this.canvas = canvas;
       this.media = new Map(); // id -> { id, kind, blob, url, duration, w, h, el, buffer, bufferP }
+      this.stills = new Map(); // clipId -> last frame drawn, for the end of a transition
       this.videos = new Map(); // clipId -> HTMLVideoElement (one per clip so transitions can show two)
       this.sounds = new Map(); // soundId -> HTMLAudioElement (preview only; export decodes)
       this.project = null;
@@ -411,6 +412,15 @@
       if (hit) hit.push({ id: o.id, x: (cx - bw / 2 * scale) / W, y: (cy - bh / 2 * scale) / H, w: bw * scale / W, h: bh * scale / H });
     }
 
+    keepStill(id, cv, W, H) {
+      if (!this.stills) this.stills = new Map();
+      let c = this.stills.get(id);
+      if (!c) { c = layer(W, H); this.stills.set(id, c); }
+      if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+      const g = c.getContext('2d'); g.globalCompositeOperation = 'copy'; g.drawImage(cv, 0, 0); g.globalCompositeOperation = 'source-over';
+      if (this.stills.size > 6) this.stills.delete(this.stills.keys().next().value);
+    }
+
     /** Mix two same-size canvases for a transition at progress pr (0..1). */
     mix(ctx, A, B, pr, type, W, H) {
       const glc = type && type.startsWith('gl:') && typeof GLTrans !== 'undefined' ? GLTrans.render(type.slice(3), A, B, pr, W, H) : null;
@@ -461,7 +471,13 @@
       if (entries.length === 1) this.drawClip(ctx, srcs[0], entries[0].clip, W, H, entries[0].local);
       else if (entries.length === 2) {
         const [A, B] = this.layers;
-        this.drawClip(A.getContext('2d'), srcs[0], entries[0].clip, W, H, entries[0].local);
+        const live = !exact && !target;
+        const outA = entries[0].local >= M.clipDur(entries[0].clip) - 0.02, inB = entries[1].local < 0;
+        // While playing, only one clip's video runs at a time (phones often can't decode two at once).
+        // The clip that has ended shows the last frame it drew; the next one shows its first frame.
+        if (live && outA && this.stills.has(entries[0].clip.id)) A.getContext('2d').drawImage(this.stills.get(entries[0].clip.id), 0, 0, W, H);
+        else this.drawClip(A.getContext('2d'), srcs[0], entries[0].clip, W, H, entries[0].local);
+        if (live && !outA) this.keepStill(entries[0].clip.id, A, W, H);
         this.drawClip(B.getContext('2d'), srcs[1], entries[1].clip, W, H, entries[1].local);
         const pr = Math.max(0, Math.min(1, entries[1].progress));
         const type = entries[1].type;
@@ -556,8 +572,9 @@
       if (!this.actx) this.actx = new AudioContext({ latencyHint: 'interactive' });
       if (this.actx.state === 'suspended') this.actx.resume().catch(() => {});
       this.playing = true;
-      let t = this.time, last = performance.now();
       this.started = new Set();
+      this.unlock();
+      let t = this.time, last = performance.now(), held = 0, drawing = false;
       const tick = () => {
         if (!this.playing) return;
         const now = performance.now();
@@ -567,19 +584,51 @@
         if (main) {
           const v = main.v, c = main.e.clip;
           const clipStart = t - main.e.local;
-          if (v.ended || v.currentTime >= c.out - 0.04) t += wall; // clip finished: move on
+          if (v.ended || v.currentTime >= c.out - 0.04) { t += wall; held = 0; } // clip finished: move on
           else if (!v.paused && !v.seeking && v.readyState >= 2) {
             const vt = clipStart + (v.currentTime - c.in) / (c.speed || 1);
             t = Math.max(t, Math.min(vt, t + 0.25));
-          } // else: still loading/seeking, hold the clock
-        } else t += wall;
+            held = 0;
+          } else {
+            // still loading/seeking: hold the clock, but never for ever
+            held += wall;
+            if (held > 0.8 && v.paused && !v.seeking) this.start(v);
+            if (held > 2) t += wall; // a video that won't start must not freeze the whole preview
+            if (held > 4 && !v.seeking && v.readyState >= 1) { v.currentTime = main.e.time; held = 2; }
+          }
+        } else { t += wall; held = 0; }
         if (t >= dur) { this.pause(); this.time = dur; this.drawAt(dur - 0.01, true); if (this.onEnd) this.onEnd(); return; }
         this.time = t;
-        this.drawAt(t, false);
+        if (!drawing) { drawing = true; this.drawAt(t, false).catch(() => {}).then(() => { drawing = false; }); }
         if (this.onTime) this.onTime(t);
         this.raf = requestAnimationFrame(tick);
       };
       this.raf = requestAnimationFrame(tick);
+    }
+
+    /** Called inside the Play tap: lets each clip's <video> start with sound later (Android blocks it otherwise). */
+    unlock() {
+      const now = new Set(M.videoAt(this.project, this.time).map((e) => e.clip.id));
+      const L = M.layout(this.project).filter((r) => r.end > this.time).map((r) => r.clip);
+      const pips = (this.project.pip || []).filter((l) => l.start + M.clipDur(l) > this.time);
+      let n = 0;
+      for (const c of L.concat(pips)) {
+        if (c.kind !== 'video' || now.has(c.id) || (this.unlocked && this.unlocked.has(c.id))) continue;
+        if (++n > 6) break; // a few at a time: phones have only a handful of video decoders
+        const v = this.video(c);
+        if (!v || !v.paused) continue;
+        (this.unlocked || (this.unlocked = new Set())).add(c.id);
+        const was = v.muted; v.muted = true;
+        const pr = v.play();
+        const back = () => { if (!this.playing || !this.started.has(c.id)) v.pause(); v.muted = was; };
+        if (pr && pr.then) pr.then(back, back); else back();
+      }
+    }
+
+    /** play(), and if the phone refuses to start a video with sound on its own, start it muted rather than not at all. */
+    start(v) {
+      const pr = v.play();
+      if (pr && pr.catch) pr.catch((err) => { if (err && err.name === 'NotAllowedError' && !v.muted) { v.muted = true; v.dataset.forcedMute = '1'; v.play().catch(() => {}); } });
     }
 
     /** Start/stop/steer every media element for time t. Returns the video that drives the clock. */
@@ -591,19 +640,25 @@
         if (e.clip.kind !== 'video') continue;
         const v = this.video(e.clip);
         if (!v) continue;
-        active.add(e.clip.id);
         const rate = e.clip.speed || 1;
         if (v.playbackRate !== rate) v.playbackRate = rate;
-        const inside = e.local >= 0 && e.local < M.clipDur(e.clip);
+        const inside = e.local >= 0 && e.local < M.clipDur(e.clip) - 0.04;
+        if (!inside) {
+          // the other half of a transition: hold it still instead of playing a second video
+          if (!v.paused) v.pause();
+          if (e.local < 0 && !v.seeking && Math.abs(v.currentTime - e.clip.in) > 0.05) v.currentTime = e.clip.in;
+          continue;
+        }
+        active.add(e.clip.id);
         if (!this.started.has(e.clip.id)) {
           this.started.add(e.clip.id);
           if (Math.abs(v.currentTime - e.time) > 0.05) v.currentTime = e.time;
-        } else if (!inside && !v.seeking && Math.abs(v.currentTime - e.time) > 0.6) v.currentTime = e.time;
+        }
         const vol = e.clip.volume > 0 ? e.clip.volume : 0;
         v.muted = vol === 0;
         if (vol) this.setVolume(v, vol);
-        if (v.paused && !v.ended && v.currentTime < e.clip.out - 0.04) v.play().catch(() => {});
-        if (inside && !main) main = { e, v };
+        if (v.paused && !v.ended && v.currentTime < e.clip.out - 0.04) this.start(v);
+        if (!main) main = { e, v };
       }
       for (const l of p.pip || []) {
         if (l.kind !== 'video' || t < l.start || t >= l.start + M.clipDur(l)) continue;
