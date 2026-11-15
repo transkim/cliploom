@@ -46,7 +46,7 @@
   // ---------------- media library ----------------
   async function loadMedia() {
     st.media = (await Store.all('media')).sort((a, b) => b.created - a.created);
-    st.media.filter((m) => m.kind === 'video' && !m.stripV).forEach(queueStrip);
+    st.media.filter((m) => m.kind === 'video').forEach(queueStrip);
   }
   function mediaById(id) { return st.media.find((m) => m.id === id); }
 
@@ -90,10 +90,46 @@
     });
   }
 
+  /**
+   * Some Android phones never paint a frame for a paused video that is not on screen, so drawing it
+   * gives black. Keep the helper video in the page (invisible) and, if a frame is still black,
+   * let it play for a moment so the phone decodes a real picture.
+   */
+  function hiddenVideo(blob) {
+    const v = document.createElement('video');
+    v.muted = true; v.playsInline = true; v.preload = 'auto';
+    v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
+    Object.assign(v.style, { position: 'fixed', left: '0', top: '0', width: '2px', height: '2px', opacity: '0.01', pointerEvents: 'none', zIndex: '-1' });
+    const url = URL.createObjectURL(blob);
+    v.src = url;
+    document.body.appendChild(v);
+    v.dispose = () => { try { v.pause(); } catch (_) { /* */ } v.removeAttribute('src'); v.load(); v.remove(); URL.revokeObjectURL(url); };
+    return v;
+  }
+  /** Draw the frame at t into ctx; returns false when it stays black. */
+  async function grabFrame(v, t, ctx, w, h) {
+    await seekV(v, t);
+    await nextFrame(v);
+    ctx.drawImage(v, 0, 0, w, h);
+    if (!looksBlack(ctx, w, h)) return true;
+    for (let tries = 0; tries < 2; tries++) {
+      try {
+        await v.play();
+        await new Promise((r) => { if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(() => r()); setTimeout(r, 400); });
+        await sleep(60);
+        v.pause();
+      } catch (_) { await sleep(250); }
+      ctx.drawImage(v, 0, 0, w, h);
+      if (!looksBlack(ctx, w, h)) return true;
+    }
+    return false;
+  }
+
   /** A row of small frames across the whole video, for the timeline (made in the background). */
   const stripQueue = [];
   let stripBusy = false;
-  function queueStrip(rec) { if (rec.kind === 'video' && !rec.stripV && !stripQueue.includes(rec)) { stripQueue.push(rec); runStrips(); } }
+  const STRIP_V = 2; // bump to redo strips made by an older, weaker version
+  function queueStrip(rec) { if (rec.kind === 'video' && (rec.stripV || 0) < STRIP_V && !stripQueue.includes(rec)) { stripQueue.push(rec); runStrips(); } }
   async function runStrips() {
     if (stripBusy) return;
     stripBusy = true;
@@ -104,60 +140,58 @@
     stripBusy = false;
   }
   async function makeStrip(rec) {
-    const v = document.createElement('video');
-    v.muted = true; v.playsInline = true; v.preload = 'auto';
-    const url = URL.createObjectURL(rec.blob);
-    v.src = url;
+    const v = hiddenVideo(rec.blob);
     await new Promise((r) => { v.onloadeddata = r; v.onerror = r; setTimeout(r, 8000); });
-    if (!v.videoWidth) { URL.revokeObjectURL(url); return; }
+    if (!v.videoWidth) { v.dispose(); return; }
     const dur = rec.duration || v.duration || 1;
     const n = Math.max(4, Math.min(30, Math.ceil(dur / 1.5)));
     const H = 72, W = Math.max(40, Math.min(128, Math.round(H * v.videoWidth / v.videoHeight)));
     const c = document.createElement('canvas'); c.width = W; c.height = H;
     const ctx = c.getContext('2d', { willReadFrequently: true });
-    const frames = [];
+    const frames = [], ok = [];
     for (let i = 0; i < n; i++) {
       const t = Math.min(dur - 0.05, (i + 0.5) * dur / n);
-      await seekV(v, t);
-      await nextFrame(v);
-      ctx.drawImage(v, 0, 0, W, H);
-      if (looksBlack(ctx, W, H) && t > 0.3) { await sleep(250); ctx.drawImage(v, 0, 0, W, H); }
-      frames.push(c.toDataURL('image/jpeg', 0.6));
+      const good = await grabFrame(v, t, ctx, W, H);
+      frames.push(c.toDataURL('image/jpeg', 0.6)); ok.push(good);
     }
-    v.removeAttribute('src'); v.load(); URL.revokeObjectURL(url);
-    rec.strip = frames; rec.stripV = 1;
-    if (!rec.thumb || rec.thumbBlack) { rec.thumb = frames[Math.min(frames.length - 1, Math.floor(frames.length / 3))]; rec.thumbBlack = false; }
+    v.dispose();
+    // a frame that stayed black borrows its nearest good neighbour (a truly black scene stays black)
+    const goodIdx = ok.map((g, i) => (g ? i : -1)).filter((i) => i >= 0);
+    if (goodIdx.length) for (let i = 0; i < n; i++) if (!ok[i]) { const j = goodIdx.reduce((a, b) => (Math.abs(b - i) < Math.abs(a - i) ? b : a)); frames[i] = frames[j]; }
+    rec.strip = frames; rec.stripV = STRIP_V;
+    if (!rec.thumb || rec.thumbBlack || !rec.thumbOk) {
+      const pick = goodIdx.length ? goodIdx[Math.min(goodIdx.length - 1, Math.floor(goodIdx.length / 3))] : Math.floor(n / 3);
+      rec.thumb = frames[pick]; rec.thumbBlack = !goodIdx.length; rec.thumbOk = goodIdx.length > 0;
+    }
     await Store.put('media', rec).catch(() => {});
     if (st.project) { renderTimeline(); if (st.tab === 'media') renderTab(); }
   }
 
   function probeVideo(blob) {
     return new Promise((resolve) => {
-      const v = document.createElement('video');
-      v.muted = true; v.preload = 'auto'; v.playsInline = true;
-      const url = URL.createObjectURL(blob);
-      const done = (r) => { URL.revokeObjectURL(url); resolve(r); };
+      const v = hiddenVideo(blob);
+      let finished = false;
+      const done = (r) => { if (finished) return; finished = true; v.dispose(); resolve(r); };
       v.onerror = () => done(null);
       v.onloadedmetadata = () => {
         let dur = v.duration;
-        const grab = () => {
+        const grab = async () => {
           const c = document.createElement('canvas');
           const s = 200 / Math.max(v.videoWidth || 1, v.videoHeight || 1);
           c.width = Math.max(1, Math.round(v.videoWidth * s)); c.height = Math.max(1, Math.round(v.videoHeight * s));
           const g = c.getContext('2d', { willReadFrequently: true });
-          try { g.drawImage(v, 0, 0, c.width, c.height); } catch (_) { /* no frame */ }
-          done({ thumbBlack: looksBlack(g, c.width, c.height), duration: dur, w: v.videoWidth, h: v.videoHeight, thumb: c.toDataURL('image/jpeg', 0.7) });
+          let ok = false;
+          try { ok = await grabFrame(v, Math.min(1, (dur || 1) / 3), g, c.width, c.height); } catch (_) { /* no frame */ }
+          done({ thumbBlack: !ok, thumbOk: ok, duration: dur, w: v.videoWidth, h: v.videoHeight, thumb: c.toDataURL('image/jpeg', 0.7) });
         };
-        const go = () => { v.onseeked = () => { v.onseeked = null; nextFrame(v).then(grab); }; v.currentTime = Math.min(1, (dur || 1) / 3); };
         if (!isFinite(dur)) { // some webm files: find duration by seeking far
-          v.ondurationchange = () => { if (isFinite(v.duration)) { dur = v.duration; v.ondurationchange = null; v.onseeked = null; go(); } };
+          v.ondurationchange = () => { if (isFinite(v.duration)) { dur = v.duration; v.ondurationchange = null; grab(); } };
           v.currentTime = 1e7;
           return;
         }
-        go();
+        grab();
       };
-      v.src = url;
-      setTimeout(() => done(null), 15000);
+      setTimeout(() => done(null), 20000);
     });
   }
   async function probeImage(blob) {
@@ -202,7 +236,7 @@
           toast('Importing ' + (files.length > 1 ? i + ' of ' + files.length : f.name) + '…', 8000);
           const p = await probeVideo(f);
           if (!p) { toast('This device cannot play ' + f.name, 4000); continue; }
-          const rec = await saveMedia({ id: M.uid('m'), name: f.name, kind, type: f.type, blob: f, duration: p.duration, w: p.w, h: p.h, thumb: p.thumb, thumbBlack: p.thumbBlack, source: 'import' });
+          const rec = await saveMedia({ id: M.uid('m'), name: f.name, kind, type: f.type, blob: f, duration: p.duration, w: p.w, h: p.h, thumb: p.thumb, thumbBlack: p.thumbBlack, thumbOk: p.thumbOk, source: 'import' });
           queueStrip(rec); added.push(rec);
         } else if (kind === 'image') {
           const p = await probeImage(f);
